@@ -1,0 +1,122 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --alfa-brand-red: #ef3124;
+    --alfa-brand-red-hover: #d92a1f;
+    --alfa-brand-red-pressed: #c5231a;
+    --alfa-brand-black: #0b0b0b;
+    --alfa-brand-white: #ffffff;
+    --alfa-text-primary: #0b0b0b;
+    --alfa-text-secondary: #6d6d72;
+    --alfa-text-tertiary: #929299;
+    --alfa-text-inverse: #ffffff;
+    --alfa-text-accent: #ef3124;
+    --alfa-text-positive: #118a4e;
+    --alfa-text-negative: #d92a1f;
+    --alfa-text-disabled: #b8b8be;
+    --alfa-surface-page: #ffffff;
+    --alfa-surface-subtle: #f3f4f5;
+    --alfa-surface-raised: #ffffff;
+    --alfa-surface-dark: #0b0b0b;
+    --alfa-surface-accent: #ef3124;
+    --alfa-surface-overlay: rgba(11, 11, 11, 0.56);
+    --alfa-surface-glass: rgba(255, 255, 255, 0.82);
+    --alfa-border-default: #e2e3e5;
+    --alfa-border-strong: #c7c8cc;
+    --alfa-border-focus: #ef3124;
+    --alfa-border-inverse: rgba(255, 255, 255, 0.24);
+
+    --background: 0 0% 100%;
+    --foreground: 0 0% 4.314%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 4.314%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 4.314%;
+    --primary: 3.548 75% 48.627%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 210 9.091% 95.686%;
+    --secondary-foreground: 0 0% 4.314%;
+    --muted: 210 9.091% 95.686%;
+    --muted-foreground: 240 2.242% 43.725%;
+    --accent: 210 9.091% 95.686%;
+    --accent-foreground: 0 0% 4.314%;
+    --destructive: 3.548 75% 48.627%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 5.455% 89.216%;
+    --input: 220 5.455% 89.216%;
+    --ring: 3.842 86.383% 53.922%;
+    --radius: 0.75rem;
+    --sidebar-background: 210 9.091% 95.686%;
+    --sidebar-foreground: 0 0% 4.314%;
+    --sidebar-primary: 3.548 75% 48.627%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 0 0% 100%;
+    --sidebar-accent-foreground: 0 0% 4.314%;
+    --sidebar-border: 220 5.455% 89.216%;
+    --sidebar-ring: 3.842 86.383% 53.922%;
+  }
+
+  .dark {
+    --background: 240 10% 3.9%;
+    --foreground: 0 0% 98%;
+    --card: 240 10% 3.9%;
+    --card-foreground: 0 0% 98%;
+    --popover: 240 10% 3.9%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 3.548 75% 48.627%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 3.7% 15.9%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 240 3.7% 15.9%;
+    --muted-foreground: 240 5% 64.9%;
+    --accent: 240 3.7% 15.9%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 3.7% 15.9%;
+    --input: 240 3.7% 15.9%;
+    --ring: 3.842 86.383% 53.922%;
+    --sidebar-background: 240 5.9% 10%;
+    --sidebar-foreground: 240 4.8% 95.9%;
+    --sidebar-primary: 224.3 76.3% 48%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 240 3.7% 15.9%;
+    --sidebar-accent-foreground: 240 4.8% 95.9%;
+    --sidebar-border: 240 3.7% 15.9%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background font-sans text-foreground;
+  }
+}
+
+@layer utilities {
+  .numeric-tabular {
+    font-family: "Styrene A", Arial, sans-serif;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html:focus-within {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
+}

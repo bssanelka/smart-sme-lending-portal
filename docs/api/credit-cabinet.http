@@ -1,0 +1,281 @@
+# Credit Cabinet API collection
+# Compatible with JetBrains HTTP Client and VS Code REST Client.
+# Execute requests from top to bottom. Named-response variables pass the freshly created IDs,
+# so the flow never relies on seeded or hard-coded application/document IDs.
+# Both clients keep the session cookie for the same host; clientLogin, bankLogin and clientRelogin
+# intentionally replace it when the role changes.
+#
+# If an editor reports an unresolved request variable, execute the named source request shown
+# before it in this file first. Numeric response variables are intentionally not quoted in JSON.
+
+@baseUrl = http://localhost:3000
+@password = demo123
+# Change runId before every new full run. It keeps mutation keys unique while allowing an exact request replay.
+@runId = jury-20261023-01
+
+### 01. Health
+# @name health
+GET {{baseUrl}}/api/health
+Accept: application/json
+
+### 02. Login as client1
+# @name clientLogin
+POST {{baseUrl}}/api/auth/login
+Content-Type: application/json
+Accept: application/json
+
+{
+  "login": "client1",
+  "password": "{{password}}"
+}
+
+### 03. Current client
+# @name currentClient
+GET {{baseUrl}}/api/auth/me
+Accept: application/json
+
+### 04. Client profile and preliminary benefit ideas
+# Matching is demonstrational and does not guarantee eligibility.
+# @name clientProfile
+GET {{baseUrl}}/api/client/profile
+Accept: application/json
+
+### 05. Create a NEW preliminary calculation
+# This is rule-based guidance, not calibrated ML, a bank decision or an offer.
+# The response contains calculation_id, recommended product/amount/term, monthlyPayment,
+# overpayment and creditPotential. The next requests reference this exact response.
+# @name calculator
+POST {{baseUrl}}/api/calculator/evaluate
+Content-Type: application/json
+Accept: application/json
+
+{
+  "amount": 1500000,
+  "term_months": 12,
+  "purpose_category": "оборотные средства"
+}
+
+### 06. Read the canonical locked calculation snapshot
+# @name savedCalculation
+GET {{baseUrl}}/api/calculator/runs/{{calculator.response.body.$.data.calculation_id}}
+Accept: application/json
+
+### 07. Optional what-if calculation
+# This creates a separate audit snapshot but does not mutate profile data or the application flow.
+# Do not use this response in request 08: that request intentionally uses the canonical calculator response.
+# @name calculatorWhatIf
+POST {{baseUrl}}/api/calculator/evaluate
+Content-Type: application/json
+Accept: application/json
+
+{
+  "amount": 1500000,
+  "term_months": 12,
+  "purpose_category": "оборотные средства",
+  "scenario": {
+    "bki_score": 700,
+    "pdn": 35,
+    "margin_percent": 15
+  }
+}
+
+### 08. Create a NEW application from the exact canonical calculation
+# The API accepts only the free-text purpose and required calculation_id. Product, amount,
+# term and purpose category are read by the server from the owned immutable calculation snapshot.
+# @name createApplication
+POST {{baseUrl}}/api/applications
+Content-Type: application/json
+Accept: application/json
+Idempotency-Key: {{runId}}-create
+
+{
+  "purpose": "Закупка продуктов перед сезоном",
+  "calculation_id": {{calculator.response.body.$.data.calculation_id}}
+}
+
+### 09. Client refresh: application should reach DECISION
+# Check data.id/public_no/status/events. Automatic conveyor stages are synchronous in the demo,
+# so a successful response is normally already DECISION. Re-run this safe GET to refresh.
+# @name clientApplicationAtDecision
+GET {{baseUrl}}/api/applications/{{createApplication.response.body.$.data.id}}
+Accept: application/json
+
+### 10. Login as bank (replaces the client cookie)
+# @name bankLogin
+POST {{baseUrl}}/api/auth/login
+Content-Type: application/json
+Accept: application/json
+
+{
+  "login": "bank",
+  "password": "{{password}}"
+}
+
+### 11. Bank queue at the decision stage
+# Find data[] item whose id/public_no equals request 08. Do not pick a seeded application.
+# @name bankQueue
+GET {{baseUrl}}/api/bank/queue?status=DECISION
+Accept: application/json
+
+### 12. Bank dossier for THE application created in request 08
+# @name bankApplication
+GET {{baseUrl}}/api/bank/applications/{{createApplication.response.body.$.data.id}}
+Accept: application/json
+
+### 13. Stored recommendation for the same application (read-only; does not recalculate or update the application)
+# For the canonical client1 dataset proposal.type is APPROVE. The decision below uses the
+# recommendation rate but explicitly preserves the newly calculated product, amount and term.
+# @name bankRecommendation
+GET {{baseUrl}}/api/bank/applications/{{createApplication.response.body.$.data.id}}/recommendation
+Accept: application/json
+
+### 14. Bank approves THE newly created application
+# @name bankDecision
+POST {{baseUrl}}/api/bank/applications/{{createApplication.response.body.$.data.id}}/decision
+Content-Type: application/json
+Accept: application/json
+Idempotency-Key: {{runId}}-decision
+
+{
+  "type": "APPROVE",
+  "product_id": {{calculator.response.body.$.data.selection.recommended.product.id}},
+  "rate": {{bankRecommendation.response.body.$.data.proposal.rate}},
+  "amount": {{calculator.response.body.$.data.selection.recommended.amount}},
+  "term_months": {{calculator.response.body.$.data.selection.recommended.termMonths}},
+  "reason": "Низкий риск: сотрудник банка подтвердил условия после проверки досье."
+}
+
+### 15. Optional template dossier summary
+# The response is always deterministic with source=template; no AI/LLM runtime is used.
+# @name bankSummary
+GET {{baseUrl}}/api/bank/applications/{{createApplication.response.body.$.data.id}}/summary
+Accept: application/json
+
+### 16. Login again as client1 (replaces the bank cookie)
+# @name clientRelogin
+POST {{baseUrl}}/api/auth/login
+Content-Type: application/json
+Accept: application/json
+
+{
+  "login": "client1",
+  "password": "{{password}}"
+}
+
+### 17. Application refresh: inspect the server-persisted OFFER
+# Expect status=OFFER. The persisted decision contains productName, amount, rate, termMonths,
+# reason, monthlyPayment, overpayment, totalPayment, paymentType, validUntil and feesIncluded.
+# decision.preliminaryTerms preserves the calculator snapshot for requested-vs-offered comparison.
+# The UI displays these server values and does not derive replacement economics locally.
+# @name applicationOffer
+GET {{baseUrl}}/api/applications/{{createApplication.response.body.$.data.id}}
+Accept: application/json
+
+### 18. Accept the offer
+# @name acceptOffer
+POST {{baseUrl}}/api/applications/{{createApplication.response.body.$.data.id}}/accept
+Accept: application/json
+Idempotency-Key: {{runId}}-accept
+
+### 19. Refresh after acceptance and obtain document IDs
+# Expect status=SIGNING and three GENERATED documents. The download requests below use IDs
+# from this exact response; run this request again if the editor says a document variable is unresolved.
+# @name applicationAfterAccept
+GET {{baseUrl}}/api/applications/{{createApplication.response.body.$.data.id}}
+Accept: application/json
+
+### 20a. Download/read credit agreement (document 0)
+# Expect 200 text/plain plus Content-Disposition. Use "Save Response Body" if the IDE displays it inline.
+# Verify the public application number and final product/amount/term/rate before signing.
+# @name downloadCreditAgreement
+GET {{baseUrl}}/api/documents/{{applicationAfterAccept.response.body.$.data.documents[0].id}}/download
+Accept: text/plain
+
+### 20b. Download/read payment schedule (document 1)
+# @name downloadPaymentSchedule
+GET {{baseUrl}}/api/documents/{{applicationAfterAccept.response.body.$.data.documents[1].id}}/download
+Accept: text/plain
+
+### 20c. Download/read account statement (document 2)
+# @name downloadAccountStatement
+GET {{baseUrl}}/api/documents/{{applicationAfterAccept.response.body.$.data.documents[2].id}}/download
+Accept: text/plain
+
+### 21. Acknowledge the complete document package
+# The server accepts this only after the owner has downloaded all three documents.
+# @name acknowledgeDocuments
+POST {{baseUrl}}/api/applications/{{createApplication.response.body.$.data.id}}/documents/acknowledge
+Accept: application/json
+Idempotency-Key: {{runId}}-acknowledge
+
+### 22. Sign documents (modeled client signature only)
+# No qualified electronic signature or transfer occurs. Expect READY_FOR_ISSUANCE, not ISSUED.
+# @name signDocuments
+POST {{baseUrl}}/api/applications/{{createApplication.response.body.$.data.id}}/sign
+Accept: application/json
+Idempotency-Key: {{runId}}-sign
+
+### 23. Check the separately signed state
+# Expect data.status=READY_FOR_ISSUANCE, signed_at/signed_by and all documents SIGNED.
+# @name applicationReadyForIssuance
+GET {{baseUrl}}/api/applications/{{createApplication.response.body.$.data.id}}
+Accept: application/json
+
+### 24. Login as bank to confirm issuance
+# @name bankReloginForIssue
+POST {{baseUrl}}/api/auth/login
+Content-Type: application/json
+Accept: application/json
+
+{
+  "login": "bank",
+  "password": "{{password}}"
+}
+
+### 25. Confirm modeled issuance as bank
+# This idempotent command records issued_at/issued_by and BANK_CONFIRMED without a real transfer.
+# @name issueApplication
+POST {{baseUrl}}/api/bank/applications/{{createApplication.response.body.$.data.id}}/issue
+Accept: application/json
+Idempotency-Key: {{runId}}-issue
+
+### 26. Login again as client1 for the final screen
+# @name clientFinalRelogin
+POST {{baseUrl}}/api/auth/login
+Content-Type: application/json
+Accept: application/json
+
+{
+  "login": "client1",
+  "password": "{{password}}"
+}
+
+### 27. Final ISSUED check
+# Expect data.status=ISSUED, issuance_mode=BANK_CONFIRMED, distinct signed_at/issued_at,
+# every data.documents[*].status=SIGNED, and separate READY_FOR_ISSUANCE/ISSUED events.
+# @name finalIssuedApplication
+GET {{baseUrl}}/api/applications/{{createApplication.response.body.$.data.id}}
+Accept: application/json
+
+### 28. Optional: client application list contains the same public number
+# @name clientApplications
+GET {{baseUrl}}/api/applications/mine
+Accept: application/json
+
+### Additional branch: upload structured financials in MORE_INFO
+# This is intentionally not part of the canonical client1 happy path.
+# First create another application, let bank set MORE_INFO, login as its owner, and replace the
+# request variable below with that named create request (or use its response id directly).
+#
+# POST {{baseUrl}}/api/applications/{{createApplication.response.body.$.data.id}}/financials
+# Content-Type: application/json
+# Accept: application/json
+#
+# {
+#   "year": 2025,
+#   "revenue": 12000000,
+#   "profit": 3000000,
+#   "own_capital": 7500000,
+#   "monthly_obligations": 180000,
+#   "comment": "Отчётность загружена"
+# }

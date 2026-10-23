@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint, test, and build
+        run: npm run check
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run browser and accessibility E2E
+        run: npm run test:e2e
+
+      - name: Stop E2E stack
+        if: always()
+        run: docker compose -f docker-compose.e2e.yml down || true
+
+      - name: Build production image
+        run: docker build --tag smart-credit-cabinet:ci .
+
+      - name: Smoke-test production container
+        run: |
+          docker run --detach --name smart-credit-cabinet-ci --publish 127.0.0.1:3000:3000 smart-credit-cabinet:ci
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3000/api/health; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs smart-credit-cabinet-ci
+          exit 1
+
+      - name: Stop smoke-test container
+        if: always()
+        run: docker rm --force smart-credit-cabinet-ci || true
