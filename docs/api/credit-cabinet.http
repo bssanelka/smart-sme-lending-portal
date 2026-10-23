@@ -11,7 +11,9 @@
 @baseUrl = http://localhost:3000
 @password = demo123
 # Change runId before every new full run. It keeps mutation keys unique while allowing an exact request replay.
-@runId = jury-20261023-01
+@runId = jury-local-01
+# For the optional FINANCIALS branch, set this to the current UTC year. The API accepts current and previous year.
+@financialReportYear = 2026
 
 ### 01. Health
 # @name health
@@ -42,8 +44,9 @@ Accept: application/json
 
 ### 05. Create a NEW preliminary calculation
 # This is rule-based guidance, not calibrated ML, a bank decision or an offer.
-# The response contains calculation_id, recommended product/amount/term, monthlyPayment,
-# overpayment and creditPotential. The next requests reference this exact response.
+# The response contains calculation_id and server-calculated economics for the recommendation
+# and every alternative: compatibilityIndex/Level, rate, monthlyPayment, overpayment and totalPayment.
+# The compatibility index is not an approval probability. The next requests reference this exact response.
 # @name calculator
 POST {{baseUrl}}/api/calculator/evaluate
 Content-Type: application/json
@@ -100,6 +103,18 @@ Idempotency-Key: {{runId}}-create
 GET {{baseUrl}}/api/applications/{{createApplication.response.body.$.data.id}}
 Accept: application/json
 
+### 09a. Optional template assistant in the context of the client's own application
+# Always returns source=template. The endpoint is unavailable to BANK and rejects another client's application_id.
+# @name templateAssistant
+POST {{baseUrl}}/api/assistant
+Content-Type: application/json
+Accept: application/json
+
+{
+  "application_id": {{createApplication.response.body.$.data.id}},
+  "message": "Какие следующие шаги по моей заявке?"
+}
+
 ### 10. Login as bank (replaces the client cookie)
 # @name bankLogin
 POST {{baseUrl}}/api/auth/login
@@ -115,6 +130,16 @@ Accept: application/json
 # Find data[] item whose id/public_no equals request 08. Do not pick a seeded application.
 # @name bankQueue
 GET {{baseUrl}}/api/bank/queue?status=DECISION
+Accept: application/json
+
+### 11a. Optional direct check of the local synthetic BKI provider
+# @name mockBki
+GET {{baseUrl}}/api/mocks/bki/772545678901
+Accept: application/json
+
+### 11b. Optional direct check of the local synthetic business registry provider
+# @name mockRegistry
+GET {{baseUrl}}/api/mocks/egrul/772545678901
 Accept: application/json
 
 ### 12. Bank dossier for THE application created in request 08
@@ -202,7 +227,7 @@ GET {{baseUrl}}/api/documents/{{applicationAfterAccept.response.body.$.data.docu
 Accept: text/plain
 
 ### 21. Acknowledge the complete document package
-# The server accepts this only after the owner has downloaded all three documents.
+# The server accepts this only after the owner has opened all three documents via preview or download.
 # @name acknowledgeDocuments
 POST {{baseUrl}}/api/applications/{{createApplication.response.body.$.data.id}}/documents/acknowledge
 Accept: application/json
@@ -272,10 +297,23 @@ Accept: application/json
 # Accept: application/json
 #
 # {
-#   "year": 2025,
+#   "year": {{financialReportYear}},
 #   "revenue": 12000000,
 #   "profit": 3000000,
 #   "own_capital": 7500000,
 #   "monthly_obligations": 180000,
 #   "comment": "Отчётность загружена"
 # }
+
+### Optional negative check: invalid calculator input returns 400
+# Run while logged in as a client. This request must not create a calculator snapshot.
+# @name invalidCalculator
+POST {{baseUrl}}/api/calculator/evaluate
+Content-Type: application/json
+Accept: application/json
+
+{
+  "amount": 0,
+  "term_months": 1,
+  "purpose_category": "оборотные средства"
+}

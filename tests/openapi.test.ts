@@ -78,6 +78,14 @@ describe("OpenAPI contract", () => {
     }
   });
 
+  it("pins the browser API reference asset", async () => {
+    const response = await app.request("/api/docs");
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain(
+      "https://cdn.jsdelivr.net/npm/@scalar/api-reference@1.75.1",
+    );
+  });
+
   it("returns validation errors in the common JSON envelope", async () => {
     const response = await app.request("/api/auth/login", {
       method: "POST",

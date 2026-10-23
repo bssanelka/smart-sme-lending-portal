@@ -270,7 +270,7 @@ app.openapi(createRoute({
 app.openapi(createRoute({
   method: "get", path: "/api/health", operationId: "getHealth", tags: ["Meta"], security: [], summary: "Состояние сервиса",
   responses: standardResponses("Сервис доступен"),
-}), (c) => c.json(ok({ status: "up", assistantMode: "template", llmAvailable: false, model: null, time: now() })));
+}), (c) => c.json(ok({ status: "up", assistantMode: "template", time: now() })));
 
 // --- products ---
 const ProductSchema = z.object({
@@ -1225,7 +1225,7 @@ app.openapi(createRoute({
 });
 
 app.openapi(createRoute({
-  method: "get", path: "/api/bank/applications/{id}/summary", operationId: "getDossierSummary", tags: ["Bank", "AI"],
+  method: "get", path: "/api/bank/applications/{id}/summary", operationId: "getDossierSummary", tags: ["Bank", "Assistant"],
   summary: "Шаблонное саммари досье для аналитика",
   request: { params: z.object({ id: z.coerce.number() }) },
   responses: standardResponses("Саммари досье"),
@@ -1294,12 +1294,15 @@ app.doc31("/openapi.json", {
   openapi: "3.1.0",
   info: {
     title: "Умный кредитный кабинет — API",
-    version: "1.0.0",
+    version: "1.0.1",
     description: "Демонстрационный кредитный конвейер для МСБ. Использует синтетические данные, локальные моки внешних систем и шаблонные ответы ассистента.",
   },
   security: [{ cookieAuth: [] }],
 });
-app.get("/api/docs", apiReference({ url: "/openapi.json" }));
+app.get("/api/docs", apiReference({
+  url: "/openapi.json",
+  cdn: "https://cdn.jsdelivr.net/npm/@scalar/api-reference@1.75.1",
+}));
 
 // --- статика фронтенда (production) ---
 const dist = path.join(process.cwd(), "dist");

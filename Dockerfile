@@ -1,5 +1,5 @@
 # ---- Сборка ----
-FROM node:22-bookworm-slim AS build
+FROM node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS build
 WORKDIR /app
 
 # better-sqlite3 может собираться из исходников, если готового бинарника нет.
@@ -15,7 +15,7 @@ RUN npm run build \
     && npm cache clean --force
 
 # ---- Рантайм ----
-FROM node:22-bookworm-slim
+FROM node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d
 WORKDIR /app
 ENV NODE_ENV=production \
     PORT=3000 \

@@ -57,9 +57,16 @@
 
 UI-компоненты в `src/components/ui` являются исходным кодом проекта, собранным поверх Radix/Tailwind-паттернов; отдельного runtime-пакета `shadcn` в `package.json` нет.
 
+## Контейнер и документация API
+
+- Build- и runtime-стадии закреплены на официальном образе `node:22-bookworm-slim` с Node.js `22.23.4`: `node@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d`. Node.js распространяется по MIT License; Debian-пакеты внутри образа сохраняют собственные лицензии и notices.
+- Интерактивная страница `/api/docs` формируется `@scalar/hono-api-reference` и загружает browser asset `@scalar/api-reference` версии `1.75.1` (MIT) через сервис доставки jsDelivr по закреплённому URL `https://cdn.jsdelivr.net/npm/@scalar/api-reference@1.75.1`.
+- jsDelivr используется только для доставки browser UI страницы `/api/docs` и не встраивается в runtime-образ. Кредитный процесс, health endpoint и `/openapi.json` от CDN не зависят.
+- Docker, Docker Desktop, браузер и редакторы HTTP-запросов являются инструментами запуска/проверки и не встраиваются в runtime-образ проекта.
+
 ## Шаблонный помощник
 
-В фактическом runtime нет AI/LLM-сервиса, модели или model weights. Помощник клиента и саммари досье формируются собственными детерминированными шаблонами с `source=template`; `/api/health` возвращает `assistantMode=template`, `llmAvailable=false`, `model=null`. Поэтому отдельный AI-runtime не входит в third-party runtime notices.
+В фактическом runtime нет AI/LLM-сервиса, модели или model weights. Помощник клиента и саммари досье формируются собственными детерминированными шаблонами с `source=template`; `/api/health` возвращает `assistantMode=template`. Поэтому отдельный AI-runtime не входит в third-party runtime notices.
 
 
 ## Собственные расчётные правила
