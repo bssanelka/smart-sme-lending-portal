@@ -48,6 +48,7 @@ export interface CreditTerms {
 export interface Decision extends CreditTerms {
   type: DecisionType;
   reason: string | null;
+  clientComment: string | null;
   decidedAt: string | null;
   finalRiskAssessment?: {
     scorecardVersion: string;
@@ -61,7 +62,11 @@ export interface Decision extends CreditTerms {
   };
 }
 
-export type DecisionProposal = Omit<Decision, "decidedAt">;
+export interface BankDecision extends Decision {
+  internalReason?: string;
+}
+
+export type DecisionProposal = Omit<Decision, "decidedAt" | "clientComment">;
 
 export interface ScoreFactor { key: string; label: string; value: string; points: number; explanation: string; }
 
@@ -208,8 +213,8 @@ export interface MoreInfoResponseInput {
 }
 
 export type BankDecisionInput =
-  | { type: "APPROVE" | "CONDITIONS"; product_id?: number; rate: number; amount: number; term_months: number; reason: string }
-  | { type: "REJECT"; reason: string }
+  | { type: "APPROVE" | "CONDITIONS"; product_id?: number; rate: number; amount: number; term_months: number; internal_reason: string; client_comment: string }
+  | { type: "REJECT"; internal_reason: string; client_comment: string }
   | {
       type: "MORE_INFO";
       reason: string;
@@ -290,8 +295,41 @@ export interface BenefitSuggestion {
   program: null;
   description: string;
   benefit: string;
+  applicability: { region: string; scope: string };
+  source: { catalog: string; entry: string; version: string; updatedAt: string };
+  observedCriteria: string[];
+  unknownCriteria: string[];
+  requiredEvidence: string[];
+  nextStep: string;
   whyMatches: string[];
   requirements: string[];
+}
+
+export type BenefitPreviewSmeStatus = "micro" | "small" | "medium" | "not_sme" | "unknown";
+export type BenefitPreviewPurpose = "working_capital" | "investment" | "guarantee" | "digitalization" | "consulting" | "other";
+
+export interface BenefitPreviewRequest {
+  region: string;
+  sme_status: BenefitPreviewSmeStatus;
+  purpose: BenefitPreviewPurpose;
+  amount?: number;
+  term_months?: number;
+  industry?: string;
+}
+
+export interface BenefitPreviewItem {
+  item: BenefitSuggestion;
+  reasons: string[];
+  unknowns: string[];
+}
+
+export interface BenefitPreviewResponse {
+  items: BenefitPreviewItem[];
+  metadata: {
+    eligibilityChecked: false;
+    externalDataUsed: false;
+    answersPersisted: false;
+  };
 }
 
 export interface ClientProfile {
@@ -328,7 +366,8 @@ export interface ExternalCheckMetadata {
   requested_at: string;
 }
 
-export interface Dossier extends Application {
+export interface Dossier extends Omit<Application, "decision"> {
+  decision?: BankDecision | null;
   company: Company;
   client_name: string;
   financial_reports: FinancialReport[];
@@ -432,6 +471,8 @@ export const api = {
   products: () => req<Product[]>("/api/products"),
   product: (id: number) => req<Product>(`/api/products/${id}`),
   clientProfile: () => req<ClientProfile>("/api/client/profile"),
+  previewClientBenefits: (body: BenefitPreviewRequest) =>
+    req<BenefitPreviewResponse>("/api/client/profile/benefits/preview", { method: "POST", body: JSON.stringify(body) }),
 
   evaluateCalculator: (b: CalculatorRequest) =>
     req<CalculatorResponse>("/api/calculator/evaluate", { method: "POST", body: JSON.stringify(b) }),

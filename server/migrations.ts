@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { buildDecisionEconomics, requireDecisionEconomicsSnapshot } from "./calculator";
 import { buildDocumentPackage } from "./document-templates";
+import { defaultClientDecisionComment, type FinalDecisionType } from "./decision-text";
 
 export interface SchemaMigration {
   version: number;
@@ -677,6 +678,116 @@ export const commandIdempotency: SchemaMigration = {
   },
 };
 
+const separateDecisionNarratives: SchemaMigration = {
+  version: 12,
+  name: "separate_internal_and_client_decision_text",
+  up(database) {
+    const rows = database.prepare(`
+      SELECT a.id, a.status, a.decision, a.decided_at, a.updated_at, a.public_no, a.purpose,
+        c.name AS company_name, c.inn AS company_inn, c.head_name AS company_head_name,
+        p.name AS source_product_name
+      FROM applications a
+      JOIN companies c ON c.id = a.company_id
+      JOIN products p ON p.id = a.product_id
+      WHERE a.decision IS NOT NULL
+    `).all() as Array<Record<string, unknown>>;
+    const updateDecision = database.prepare("UPDATE applications SET decision = ? WHERE id = ?");
+    const quarantineLegacyDocuments = database.prepare(`
+      UPDATE documents
+      SET status = 'UNAVAILABLE', document_version = 'legacy-unavailable-v2', content_text = NULL
+      WHERE application_id = ?
+    `);
+    const insertDocument = database.prepare(`
+      INSERT INTO documents (
+        application_id, kind, filename, status, document_version, content_hash, content_text, created_at
+      ) VALUES (?, ?, ?, 'GENERATED', ?, ?, ?, ?)
+    `);
+    const resetForSigning = database.prepare(`
+      UPDATE applications
+      SET status = 'SIGNING', signed_at = NULL, signed_by = NULL, updated_at = ?
+      WHERE id = ?
+    `);
+    const resetForDecision = database.prepare(`
+      UPDATE applications
+      SET status = 'DECISION', decision = NULL, decided_by = NULL, decided_at = NULL,
+        signed_at = NULL, signed_by = NULL, updated_at = ?
+      WHERE id = ?
+    `);
+    const addRecoveryEvent = database.prepare(`
+      INSERT INTO application_events (application_id, from_status, to_status, actor, comment, created_at)
+      VALUES (?, ?, ?, 'Система', ?, ?)
+    `);
+
+    for (const row of rows) {
+      const decision = jsonObject(row.decision as string);
+      if (!decision || typeof decision.clientComment === "string") continue;
+      if (decision.type !== "APPROVE" && decision.type !== "CONDITIONS" && decision.type !== "REJECT") continue;
+
+      const decisionType = decision.type as FinalDecisionType;
+      const legacyReason = typeof decision.reason === "string" && decision.reason.trim().length > 0
+        ? decision.reason.trim()
+        : "Историческое внутреннее обоснование отсутствует.";
+      const clientComment = defaultClientDecisionComment(decisionType);
+      decision.internalReason = typeof decision.internalReason === "string" && decision.internalReason.trim().length > 0
+        ? decision.internalReason
+        : legacyReason;
+      decision.clientComment = clientComment;
+      decision.reason = clientComment;
+      updateDecision.run(JSON.stringify(decision), row.id);
+      quarantineLegacyDocuments.run(row.id);
+
+      if (row.status !== "SIGNING" && row.status !== "READY_FOR_ISSUANCE") continue;
+      const migratedAt = new Date().toISOString();
+      try {
+        const economics = requireDecisionEconomicsSnapshot(decision);
+        const decidedAt = typeof decision.decidedAt === "string"
+          ? decision.decidedAt
+          : typeof row.decided_at === "string" ? row.decided_at : row.updated_at as string;
+        const documents = buildDocumentPackage({
+          publicNo: row.public_no as string,
+          companyName: row.company_name as string,
+          companyInn: row.company_inn as string,
+          companyHeadName: row.company_head_name as string,
+          productName: typeof decision.productName === "string" ? decision.productName : row.source_product_name as string,
+          purpose: row.purpose as string,
+          decisionReason: clientComment,
+          decidedAt,
+          generatedAt: migratedAt,
+          economics,
+        });
+        for (const document of documents) {
+          insertDocument.run(
+            row.id,
+            document.kind,
+            document.filename,
+            document.version,
+            document.contentHash,
+            document.content,
+            migratedAt,
+          );
+        }
+        resetForSigning.run(migratedAt, row.id);
+        addRecoveryEvent.run(
+          row.id,
+          row.status,
+          "SIGNING",
+          "Прежний пакет документов перемещён в недоступный архив. Сформирован безопасный пакет для повторного ознакомления и подписания.",
+          migratedAt,
+        );
+      } catch {
+        resetForDecision.run(migratedAt, row.id);
+        addRecoveryEvent.run(
+          row.id,
+          row.status,
+          "DECISION",
+          "Прежний пакет документов перемещён в недоступный архив. Для продолжения сотруднику банка необходимо сформировать новое решение.",
+          migratedAt,
+        );
+      }
+    }
+  },
+};
+
 export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
   initialSchema,
   calculationSource,
@@ -689,6 +800,7 @@ export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
   verifiableDocumentPackage,
   separateSigningAndIssuance,
   commandIdempotency,
+  separateDecisionNarratives,
 ];
 
 export const LATEST_SCHEMA_VERSION = SCHEMA_MIGRATIONS.at(-1)?.version ?? 0;

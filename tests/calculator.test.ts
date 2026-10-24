@@ -89,7 +89,52 @@ describe("automatic product selection", () => {
     expect(chosen.selection.alternatives.map((option) => option.product.id)).toContain(selection.recommended.product.id);
   });
 
-  it("rejects a product that was not offered among eligible alternatives", () => {
+  it("checks an explicitly selected product against the full ranked list while keeping UI alternatives limited", () => {
+    const rankedProducts = Array.from({ length: 5 }, (_, index) => ({
+      id: index + 1,
+      code: `ranked-${index + 1}`,
+      name: `Продукт ${index + 1}`,
+      tagline: "",
+      minAmount: 100_000,
+      maxAmount: 2_000_000 + index * 1_000_000,
+      rateFrom: 15 + index,
+      termMin: 3,
+      termMax: 24,
+      purposeTags: ["оборотные средства"],
+      minRevenue: 0,
+    }));
+    const selection = selectProductForNeed(rankedProducts, {
+      amount: 1_500_000,
+      termMonths: 12,
+      purposeCategory: "оборотные средства",
+      annualRevenue: 42_000_000,
+    });
+
+    expect(selection.alternatives.map((option) => option.product.id)).toEqual([2, 3]);
+
+    const chosen = chooseProductForCalculation(selection, 5);
+
+    expect(chosen.source).toBe("CLIENT_ALTERNATIVE");
+    expect(chosen.selected.product.id).toBe(5);
+    expect(chosen.selection.recommended.product.id).toBe(5);
+    expect(chosen.selection.alternatives.map((option) => option.product.id)).toEqual([1, 2]);
+    expect(chosen.selection.alternatives).toHaveLength(2);
+  });
+
+  it("returns concrete eligibility reasons for an explicitly selected ineligible product", () => {
+    const selection = selectProductForNeed(products, {
+      amount: 1_500_000,
+      termMonths: 12,
+      purposeCategory: "оборотные средства",
+      annualRevenue: 5_000_000,
+    });
+
+    expect(() => chooseProductForCalculation(selection, 3)).toThrow(
+      /Инвестиционный: .*Годовая выручка ниже минимальной.*Продукт не предназначен для цели «оборотные средства»/,
+    );
+  });
+
+  it("returns a subject-specific conflict for an unknown product", () => {
     const selection = selectProductForNeed(products, {
       amount: 1_500_000,
       termMonths: 12,
@@ -97,7 +142,7 @@ describe("automatic product selection", () => {
       annualRevenue: 42_000_000,
     });
 
-    expect(() => chooseProductForCalculation(selection, 999)).toThrow("недоступен среди подходящих вариантов");
+    expect(() => chooseProductForCalculation(selection, 999)).toThrow("Продукт №999 отсутствует в текущем каталоге");
   });
 
   it("adjusts terms only inside an otherwise eligible product", () => {

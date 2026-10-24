@@ -95,12 +95,17 @@ function calculatorRetryUrl(application: Pick<Application, "amount" | "term_mont
   }).toString()}`;
 }
 
+function activePackageDocuments(application: Pick<FullApp, "documents">): AppDocument[] {
+  return application.documents.filter((document) => document.status !== "UNAVAILABLE");
+}
+
 function criticalActionApplied(action: CriticalAction, application: FullApp): boolean {
   if (action === "accept") return ["SIGNING", "READY_FOR_ISSUANCE", "ISSUED"].includes(application.status);
   if (action === "decline") return application.status === "DECLINED_BY_CLIENT";
   if (action === "sign") return ["READY_FOR_ISSUANCE", "ISSUED"].includes(application.status) && Boolean(application.signed_at);
+  const activeDocuments = activePackageDocuments(application);
   return ["READY_FOR_ISSUANCE", "ISSUED"].includes(application.status)
-    || (application.documents.length > 0 && application.documents.every((document) => Boolean(document.acknowledged_at)));
+    || (activeDocuments.length > 0 && activeDocuments.every((document) => Boolean(document.acknowledged_at)));
 }
 
 export default function ApplicationPage() {
@@ -380,9 +385,10 @@ export default function ApplicationPage() {
     ? { ...event, comment: "Автоматическая предварительная оценка завершена, заявка передана сотруднику банка" }
     : event);
   const retryUrl = calculatorRetryUrl(app);
-  const openedDocumentsCount = app.documents.filter((document) => Boolean(document.opened_at)).length;
-  const allDocumentsOpened = app.documents.length > 0 && openedDocumentsCount === app.documents.length;
-  const allDocumentsAcknowledged = app.documents.length > 0 && app.documents.every((document) => Boolean(document.acknowledged_at));
+  const activeDocuments = activePackageDocuments(app);
+  const openedDocumentsCount = activeDocuments.filter((document) => Boolean(document.opened_at)).length;
+  const allDocumentsOpened = activeDocuments.length > 0 && openedDocumentsCount === activeDocuments.length;
+  const allDocumentsAcknowledged = activeDocuments.length > 0 && activeDocuments.every((document) => Boolean(document.acknowledged_at));
   const activeMoreInfoRequest = app.active_more_info_request ?? null;
 
   const transferDocument = async (appDocument: AppDocument, mode: DocumentTransferMode) => {
@@ -491,7 +497,7 @@ export default function ApplicationPage() {
     },
     sign: {
       title: "Подтвердить demo-подписание?",
-      description: <div className="space-y-3"><p>Заявка <b>{app.public_no}</b>. Будет подписан следующий серверно подтверждённый пакет:</p><ul className="list-disc space-y-1 pl-5">{app.documents.map((document) => <li key={document.id}>{document.kind} · версия {document.document_version}</li>)}</ul><p>Это демонстрационное действие: оно не создаёт юридически значимую электронную подпись и не выполняет реальное перечисление средств.</p></div>,
+      description: <div className="space-y-3"><p>Заявка <b>{app.public_no}</b>. Будет подписан следующий серверно подтверждённый пакет:</p><ul className="list-disc space-y-1 pl-5">{activeDocuments.map((document) => <li key={document.id}>{document.kind} · версия {document.document_version}</li>)}</ul><p>Это демонстрационное действие: оно не создаёт юридически значимую электронную подпись и не выполняет реальное перечисление средств.</p></div>,
       confirmLabel: "Подтвердить demo-подписание",
       destructive: false,
     },
@@ -591,10 +597,10 @@ export default function ApplicationPage() {
                   <div className="rounded-lg border border-green-200 bg-white p-3" aria-labelledby="document-progress-label">
                     <div className="flex items-center justify-between gap-3 text-sm">
                       <span id="document-progress-label" className="font-medium text-green-950">Документы открыты</span>
-                      <strong className="tabular-nums text-green-950">{openedDocumentsCount}/{app.documents.length}</strong>
+                      <strong className="tabular-nums text-green-950">{openedDocumentsCount}/{activeDocuments.length}</strong>
                     </div>
-                    <div className="mt-2 h-2 overflow-hidden rounded-full bg-green-100" role="progressbar" aria-labelledby="document-progress-label" aria-valuemin={0} aria-valuemax={app.documents.length} aria-valuenow={openedDocumentsCount} aria-valuetext={`${openedDocumentsCount} из ${app.documents.length}`}>
-                      <div className="h-full rounded-full bg-green-700 transition-[width]" style={{ width: `${app.documents.length > 0 ? (openedDocumentsCount / app.documents.length) * 100 : 0}%` }} />
+                    <div className="mt-2 h-2 overflow-hidden rounded-full bg-green-100" role="progressbar" aria-labelledby="document-progress-label" aria-valuemin={0} aria-valuemax={activeDocuments.length} aria-valuenow={openedDocumentsCount} aria-valuetext={`${openedDocumentsCount} из ${activeDocuments.length}`}>
+                      <div className="h-full rounded-full bg-green-700 transition-[width]" style={{ width: `${activeDocuments.length > 0 ? (openedDocumentsCount / activeDocuments.length) * 100 : 0}%` }} />
                     </div>
                   </div>
                   {!allDocumentsOpened && <p className="text-xs text-amber-800">Откройте предпросмотр или скачайте файл каждого документа. Прогресс изменится только после успешной серверной фиксации и автоматического обновления заявки.</p>}
@@ -918,10 +924,12 @@ function signedDocumentsDate(documents: AppDocument[]): string | null {
 function documentStatusLabel(status: string) {
   if (status === "SIGNED") return "Подписан";
   if (status === "GENERATED") return "Сформирован";
+  if (status === "UNAVAILABLE") return "Архивная версия недоступна";
   return "Загружен";
 }
 
 function significantDocumentDate(document: AppDocument) {
+  if (document.status === "UNAVAILABLE") return { label: "Архивная запись", value: document.created_at };
   if (document.signed_at) return { label: "Подписан", value: document.signed_at };
   if (document.acknowledged_at) return { label: "Ознакомление подтверждено", value: document.acknowledged_at };
   if (document.opened_at) return { label: "Открыт", value: document.opened_at };
@@ -933,6 +941,7 @@ function DocList({ docs, documentTransfers, documentErrors, onPreview, onDownloa
     <div className="space-y-2">
       {docs.map((document) => {
         const transfer = documentTransfers[document.id];
+        const unavailable = document.status === "UNAVAILABLE";
         const errorId = `document-${document.id}-error`;
         const significantDate = significantDocumentDate(document);
         return (
@@ -943,15 +952,16 @@ function DocList({ docs, documentTransfers, documentErrors, onPreview, onDownloa
                 <div className="min-w-0">
                   <p className="break-words font-semibold">{document.kind}</p>
                   <p className="mt-1 text-xs text-muted-foreground">{significantDate.label}: <span className="whitespace-nowrap font-medium text-foreground">{fmtDate(significantDate.value)}</span></p>
+                  {unavailable && <p className="mt-1 text-xs text-amber-700">Содержимое скрыто после безопасного обновления legacy-данных. Финальные условия доступны в карточке заявки.</p>}
                 </div>
               </div>
               <div className="flex w-full flex-col gap-2 sm:w-auto sm:items-end">
                 <Badge variant={document.status === "SIGNED" ? "default" : "secondary"} className={document.status === "SIGNED" ? "bg-emerald-700" : ""}>{documentStatusLabel(document.status)}</Badge>
                 <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto">
-                  <Button type="button" size="sm" variant="outline" className="w-full" disabled={Boolean(transfer)} aria-label={`Открыть текстовый предпросмотр документа «${document.kind}»`} aria-describedby={documentErrors[document.id] ? errorId : undefined} onClick={(event) => onPreview(document, event.currentTarget)}>
+                  <Button type="button" size="sm" variant="outline" className="w-full" disabled={unavailable || Boolean(transfer)} aria-label={`Открыть текстовый предпросмотр документа «${document.kind}»`} aria-describedby={documentErrors[document.id] ? errorId : undefined} onClick={(event) => onPreview(document, event.currentTarget)}>
                     {transfer === "preview" ? <Loader2 className="animate-spin" /> : <FileCheck />} Просмотреть
                   </Button>
-                  <Button type="button" size="sm" variant="outline" className="w-full" disabled={Boolean(transfer)} aria-label={`Скачать файл документа «${document.kind}»`} aria-describedby={documentErrors[document.id] ? errorId : undefined} onClick={() => onDownload(document)}>
+                  <Button type="button" size="sm" variant="outline" className="w-full" disabled={unavailable || Boolean(transfer)} aria-label={`Скачать файл документа «${document.kind}»`} aria-describedby={documentErrors[document.id] ? errorId : undefined} onClick={() => onDownload(document)}>
                     {transfer === "download" ? <Loader2 className="animate-spin" /> : <Download />} Скачать файл
                   </Button>
                 </div>

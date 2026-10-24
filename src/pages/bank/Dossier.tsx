@@ -27,6 +27,8 @@ interface DecisionForm {
   rate: string;
   amount: string;
   term_months: string;
+  internal_reason: string;
+  client_comment: string;
   reason: string;
   request_type: MoreInfoRequestType;
   required_fields: string;
@@ -141,7 +143,8 @@ function MoreInfoResponseDetails({ response }: { response: MoreInfoResponse }) {
 }
 
 const EMPTY_DECISION: DecisionForm = {
-  type: "APPROVE", product_id: "", rate: "", amount: "", term_months: "", reason: "",
+  type: "APPROVE", product_id: "", rate: "", amount: "", term_months: "",
+  internal_reason: "", client_comment: "", reason: "",
   request_type: "FINANCIALS", required_fields: "", required_files: "", due_days: "5",
 };
 
@@ -435,7 +438,9 @@ export default function Dossier() {
 
   const submitDecision = async () => {
     if (!canOpenConfirmation) {
-      setDecisionError(creditTermsError || "Укажите причину решения.");
+      setDecisionError(creditTermsError || moreInfoError || (decision.type === "MORE_INFO"
+        ? "Укажите причину и инструкцию клиенту."
+        : "Заполните внутреннее обоснование и комментарий клиенту."));
       return;
     }
     const input: BankDecisionInput = decision.type === "MORE_INFO" ? {
@@ -447,14 +452,16 @@ export default function Dossier() {
       due_days: Number(decision.due_days),
     } : decision.type === "REJECT" ? {
       type: "REJECT",
-      reason: decision.reason,
+      internal_reason: decision.internal_reason,
+      client_comment: decision.client_comment,
     } : {
       type: decision.type,
       product_id: decision.product_id ? Number(decision.product_id) : undefined,
       rate: Number(decision.rate),
       amount: Number(decision.amount),
       term_months: Number(decision.term_months),
-      reason: decision.reason,
+      internal_reason: decision.internal_reason,
+      client_comment: decision.client_comment,
     };
     const decisionType = input.type;
     const scope = `bank:application:${d.id}:decision`;
@@ -537,7 +544,9 @@ export default function Dossier() {
       rate: p.rate != null ? String(p.rate) : hasCreditTerms(type) && product ? String(product.rate_from) : "",
       amount: p.amount != null ? String(p.amount) : hasCreditTerms(type) ? String(d.amount) : "",
       term_months: p.termMonths != null ? String(p.termMonths) : hasCreditTerms(type) ? String(d.term_months) : "",
-      reason: p.reason || "",
+      internal_reason: p.reason || "",
+      client_comment: decision.client_comment,
+      reason: decision.reason,
       request_type: type === "MORE_INFO" ? "FINANCIALS" : decision.request_type,
       required_fields: decision.required_fields,
       required_files: decision.required_files,
@@ -572,7 +581,10 @@ export default function Dossier() {
           ? "Укажите обязательные поля компании через запятую."
           : ""
     : "";
-  const canOpenConfirmation = Boolean(decision.reason.trim()) && !creditTermsError && !moreInfoError;
+  const decisionTextComplete = decision.type === "MORE_INFO"
+    ? decision.reason.trim().length >= 3
+    : decision.internal_reason.trim().length >= 3 && decision.client_comment.trim().length >= 3;
+  const canOpenConfirmation = decisionTextComplete && !creditTermsError && !moreInfoError;
   const storedTerms = resolveCreditTerms(d.decision);
   const storedTermsError = d.decision && hasCreditTerms(d.decision.type) ? creditTermsSnapshotError(d.decision) : null;
   const preliminaryTerms = resolveCreditTerms(d.preliminaryTerms);
@@ -682,7 +694,7 @@ export default function Dossier() {
                         <div><dt className="inline">Версия: </dt><dd className="inline font-mono">{d.external_checks.registry.provider_version}</dd></div>
                         <div><dt className="inline">Snapshot: </dt><dd className="inline">зафиксирован {fmtDate(d.external_checks.registry.requested_at)} для этой заявки</dd></div>
                       </dl>
-                    ) : <p className="mt-2">Snapshot отсутствует.</p>}
+                    ) : <p className="mt-2">Технические данные проверки отсутствуют.</p>}
                   </details>
                 </div>
               </CardContent></Card>
@@ -716,7 +728,7 @@ export default function Dossier() {
                         <div><dt className="inline">Версия: </dt><dd className="inline font-mono">{d.external_checks.bki.provider_version}</dd></div>
                         <div><dt className="inline">Snapshot: </dt><dd className="inline">зафиксирован {fmtDate(d.external_checks.bki.requested_at)} для этой заявки</dd></div>
                       </dl>
-                    ) : <p className="mt-2">Snapshot отсутствует.</p>}
+                    ) : <p className="mt-2">Технические данные проверки отсутствуют.</p>}
                   </details>
                 </div>
               </CardContent></Card>
@@ -840,7 +852,7 @@ export default function Dossier() {
                 <div className="space-y-3 rounded-lg border border-dashed p-3 text-xs">
                   <div className="flex flex-wrap items-start justify-between gap-2">
                     <div>
-                      <p className="text-muted-foreground">Рекомендация конвейера</p>
+                      <p className="text-muted-foreground">Рекомендация для сотрудника</p>
                       <p className="text-base font-semibold text-foreground">{rec.proposal.type === "APPROVE" ? "Одобрить" : rec.proposal.type === "CONDITIONS" ? "Изменить условия" : rec.proposal.type === "MORE_INFO" ? "Запросить информацию" : "Отказать"}</p>
                     </div>
                     <div className="text-right"><GradeBadge grade={rec.grade} /><p className="mt-1 text-muted-foreground">{rec.score} баллов</p></div>
@@ -860,14 +872,14 @@ export default function Dossier() {
                   </div>
                   {rec.financialReport && <p className={scoringFinancialReport?.status === "VERIFIED" ? "text-emerald-800" : "rounded bg-amber-50 p-2 text-amber-900"}>Финансовые данные: {rec.financialReport.year} год, источник {FINANCIAL_SOURCE_LABELS[rec.financialReport.source]}, статус {FINANCIAL_STATUS_LABELS[scoringFinancialReport?.status ?? rec.financialReport.status]}.</p>}
                   {rec.supersededAt && <p className="font-medium text-orange-800">Архивирована {fmtDate(rec.supersededAt)} после запроса №{rec.supersededByRequestId}. После ответа будет сформирована новая рекомендация.</p>}
-                  <p className="rounded-lg bg-amber-50 p-2 text-amber-950">Это демонстрационная рекомендация по детерминированным правилам. Внешние данные БКИ и реестра в этом контуре синтетические; источник финансовой отчётности указан выше. Рекомендация не является решением банка и не получена от внешней модели или ИИ.</p>
+                  <p className="rounded-lg bg-amber-50 p-2 text-amber-950">Это предварительная демонстрационная рекомендация для сотрудника. Данные БКИ и реестра в этом контуре синтетические; источник финансовой отчётности указан выше. Окончательное решение по заявке принимает банк.</p>
                   <details className="rounded-lg border bg-white p-2 text-muted-foreground">
                     <summary className="cursor-pointer font-medium text-foreground">Технические сведения о расчёте</summary>
                     <dl className="mt-2 space-y-1">
                       <div><dt className="inline">Rule-based version: </dt><dd className="inline font-mono">{rec.scorecardVersion}</dd></div>
                       <div><dt className="inline">Snapshot: </dt><dd className="inline">зафиксирован {fmtDate(rec.calculatedAt)}</dd></div>
                     </dl>
-                    <p className="mt-2">Повторное открытие досье и кнопка «Обновить» не запускают пересчёт. После запроса дополнительных данных текущая рекомендация архивируется, а после ответа конвейер формирует новую.</p>
+                    <p className="mt-2">Расчёт выполнен по детерминированным правилам, без внешней модели или ИИ. Повторное открытие досье и кнопка «Обновить» не запускают пересчёт. После запроса дополнительных данных текущая рекомендация архивируется, а после ответа конвейер формирует новую.</p>
                   </details>
                   <Button size="sm" variant="secondary" onClick={applyRec} disabled={Boolean(rec.supersededAt)}>Подставить в форму</Button>
                 </div>
@@ -937,14 +949,32 @@ export default function Dossier() {
                       {moreInfoError && <p className="text-xs text-red-700" role="alert">{moreInfoError}</p>}
                     </div>
                   )}
-                  <div className="space-y-2">
-                    <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-950">
-                      <p className="font-semibold">Этот текст увидит клиент</p>
-                      <p className="mt-1">Перед отправкой проверьте формулировки, факты и инструкции: обоснование будет показано клиенту без дополнительного редактирования.</p>
+                  {decision.type === "MORE_INFO" ? (
+                    <div className="space-y-2">
+                      <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-950">
+                        <p className="font-semibold">Этот текст увидит клиент</p>
+                        <p className="mt-1">Опишите, какие сведения нужны, в каком виде и к какому сроку их предоставить.</p>
+                      </div>
+                      <Label htmlFor="decision-reason" className="text-xs">Причина запроса и инструкция клиенту</Label>
+                      <Textarea id="decision-reason" className="min-h-36 resize-y" value={decision.reason} onChange={(e) => setDecision({ ...decision, reason: e.target.value })} placeholder="Например: приложите выписку по расчётному счёту за последние 6 месяцев" required />
                     </div>
-                    <Label htmlFor="decision-reason" className="text-xs">{decision.type === "MORE_INFO" ? "Точная причина и инструкция клиенту" : "Обоснование решения для клиента"}</Label>
-                    <Textarea id="decision-reason" className="min-h-44 resize-y" value={decision.reason} onChange={(e) => setDecision({ ...decision, reason: e.target.value })} placeholder="Введите полное и понятное клиенту обоснование решения" required />
-                  </div>
+                  ) : (
+                    <div className="space-y-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="decision-internal-reason" className="text-xs">Внутреннее обоснование банка</Label>
+                        <Textarea id="decision-internal-reason" className="min-h-36 resize-y" value={decision.internal_reason} onChange={(e) => setDecision({ ...decision, internal_reason: e.target.value })} placeholder="Зафиксируйте риск-факторы, расчёты и основание решения" required />
+                        <p className="text-[11px] text-muted-foreground">Только для сотрудников банка. Не показывается клиенту, не попадает в события и документы.</p>
+                      </div>
+                      <div className="space-y-2">
+                        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-950">
+                          <p className="font-semibold">Комментарий клиенту</p>
+                          <p className="mt-1">Клиент увидит этот текст в решении, истории заявки и документах без дополнительного редактирования.</p>
+                        </div>
+                        <Label htmlFor="decision-client-comment" className="text-xs">Текст решения для клиента</Label>
+                        <Textarea id="decision-client-comment" className="min-h-36 resize-y" value={decision.client_comment} onChange={(e) => setDecision({ ...decision, client_comment: e.target.value })} placeholder="Сформулируйте понятное клиенту решение без внутренних риск-оценок" required />
+                      </div>
+                    </div>
+                  )}
                   {decisionError && <p className="text-xs text-red-600" role="alert">{decisionError}</p>}
                   <Button className="w-full" disabled={busy || Boolean(unresolvedCommand) || !canOpenConfirmation} onClick={() => { setDecisionError(""); setConfirmOpen(true); }}>
                     Принять решение
@@ -1012,10 +1042,11 @@ export default function Dossier() {
                       <div><dt className="text-xs text-muted-foreground">Комиссии</dt><dd className="font-semibold">{d.decision.feesIncluded === false ? "Не моделируются и не включены" : "Данные не указаны"}</dd></div>
                     </dl>
                     <p className="rounded-lg bg-amber-50 p-3 text-xs text-amber-950">{ECONOMICS_DISCLOSURE}</p>
-                    {storedTermsError && <p role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-800">Ошибка server snapshot: {storedTermsError}</p>}
+                    {storedTermsError && <p role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-800">Ошибка сохранённых условий: {storedTermsError}</p>}
                     {d.decision.finalRiskAssessment && (
                       <div className="space-y-3 rounded-lg border border-blue-200 bg-blue-50 p-3 text-xs text-blue-950">
                         <div className="flex flex-wrap items-center justify-between gap-2"><p className="font-semibold">Финальная оценка риска по утверждённым условиям</p><GradeBadge grade={d.decision.finalRiskAssessment.grade} /></div>
+                        <p>Оценка пересчитана по утверждённым банком условиям. Исходная оценка заявки сохранена отдельно.</p>
                         <dl className="grid gap-2 sm:grid-cols-2">
                           <div><dt className="text-blue-800">Продукт</dt><dd className="font-semibold">{d.decision.finalRiskAssessment.productName}</dd></div>
                           <div><dt className="text-blue-800">Оценённая сумма</dt><dd className="font-semibold">{fmtMoney(d.decision.finalRiskAssessment.assessedAmount)}</dd></div>
@@ -1037,7 +1068,16 @@ export default function Dossier() {
                     )}
                   </>
                 )}
-                <p className="text-muted-foreground text-xs">{d.decision.reason}</p>
+                {d.decision.internalReason && (
+                  <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-xs">
+                    <p className="font-semibold text-blue-950">Внутреннее обоснование банка</p>
+                    <p className="mt-1 whitespace-pre-wrap text-blue-900">{d.decision.internalReason}</p>
+                  </div>
+                )}
+                <div className="rounded-lg border p-3 text-xs">
+                  <p className="font-semibold">Комментарий клиенту</p>
+                  <p className="mt-1 whitespace-pre-wrap text-muted-foreground">{d.decision.clientComment ?? d.decision.reason}</p>
+                </div>
               </CardContent>
             </Card>
           )}
@@ -1051,13 +1091,16 @@ export default function Dossier() {
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                       <div className="min-w-0">
                         <p className="font-medium">{doc.kind}</p>
-                        <p className="mt-1 text-xs text-muted-foreground">{doc.signed_at ? `Подписан ${fmtDate(doc.signed_at)}` : `Сформирован ${fmtDate(doc.created_at)}`}</p>
+                        <p className="mt-1 text-xs text-muted-foreground">{doc.status === "UNAVAILABLE" ? `Архивная запись от ${fmtDate(doc.created_at)}` : doc.signed_at ? `Подписан ${fmtDate(doc.signed_at)}` : `Сформирован ${fmtDate(doc.created_at)}`}</p>
+                        {doc.status === "UNAVAILABLE" && <p className="mt-1 text-xs text-amber-700">Содержимое недоступно после безопасного обновления legacy-данных.</p>}
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
                         <Badge variant={doc.status === "SIGNED" ? "default" : "secondary"} className={doc.status === "SIGNED" ? "bg-emerald-700" : ""}>
-                          {doc.status === "SIGNED" ? "Подписан" : "Сформирован"}
+                          {doc.status === "SIGNED" ? "Подписан" : doc.status === "UNAVAILABLE" ? "Архивная версия недоступна" : "Сформирован"}
                         </Badge>
-                        <Button asChild size="sm" variant="outline"><a href={api.documentDownloadUrl(doc.id)}><Download className="h-4 w-4" /> Скачать</a></Button>
+                        {doc.status === "UNAVAILABLE"
+                          ? <Button size="sm" variant="outline" disabled><Download className="h-4 w-4" /> Недоступен</Button>
+                          : <Button asChild size="sm" variant="outline"><a href={api.documentDownloadUrl(doc.id)}><Download className="h-4 w-4" /> Скачать</a></Button>}
                       </div>
                     </div>
                     <details className="mt-3 border-t pt-2 text-xs text-muted-foreground">
@@ -1129,7 +1172,7 @@ export default function Dossier() {
         description={(
           <div className="space-y-3">
             <p>После подтверждения решение будет отправлено клиенту и изменит статус заявки.</p>
-            <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 font-medium text-amber-950">Проверьте обоснование ниже: клиент увидит этот текст без дополнительного редактирования.</p>
+            <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 font-medium text-amber-950">Проверьте разделение текстов: клиент получит только комментарий или инструкцию для него.</p>
             <dl className="space-y-1.5 rounded-lg bg-neutral-50 p-3 text-foreground">
               <div><dt className="inline text-muted-foreground">Тип: </dt><dd className="inline font-medium">{DECISION_LABELS[decision.type]}</dd></div>
               {creditDecision && (
@@ -1139,8 +1182,20 @@ export default function Dossier() {
                   <p className="pt-1 text-xs text-muted-foreground">Платёж, переплату и общую выплату сервер рассчитает и сохранит после подтверждения решения.</p>
                 </>
               )}
-              {decision.type === "MORE_INFO" && <><div><dt className="inline text-muted-foreground">Тип запроса: </dt><dd className="inline font-medium">{MORE_INFO_TYPE_LABELS[decision.request_type]}</dd></div><div><dt className="inline text-muted-foreground">Срок ответа: </dt><dd className="inline font-medium">{decision.due_days} дн.</dd></div>{decision.required_files && <div><dt className="inline text-muted-foreground">Файлы: </dt><dd className="inline font-medium">{decision.required_files}</dd></div>}{decision.required_fields && <div><dt className="inline text-muted-foreground">Поля: </dt><dd className="inline font-medium">{decision.required_fields}</dd></div>}</>}
-              <div><dt className="block text-muted-foreground">Обоснование для клиента:</dt><dd className="mt-1 block font-medium whitespace-pre-wrap">{decision.reason}</dd></div>
+              {decision.type === "MORE_INFO" ? (
+                <>
+                  <div><dt className="inline text-muted-foreground">Тип запроса: </dt><dd className="inline font-medium">{MORE_INFO_TYPE_LABELS[decision.request_type]}</dd></div>
+                  <div><dt className="inline text-muted-foreground">Срок ответа: </dt><dd className="inline font-medium">{decision.due_days} дн.</dd></div>
+                  {decision.required_files && <div><dt className="inline text-muted-foreground">Файлы: </dt><dd className="inline font-medium">{decision.required_files}</dd></div>}
+                  {decision.required_fields && <div><dt className="inline text-muted-foreground">Поля: </dt><dd className="inline font-medium">{decision.required_fields}</dd></div>}
+                  <div><dt className="block text-muted-foreground">Инструкция клиенту:</dt><dd className="mt-1 block whitespace-pre-wrap font-medium">{decision.reason}</dd></div>
+                </>
+              ) : (
+                <>
+                  <div className="rounded-lg border border-blue-200 bg-blue-50 p-2"><dt className="block text-blue-800">Внутреннее обоснование банка:</dt><dd className="mt-1 block whitespace-pre-wrap font-medium text-blue-950">{decision.internal_reason}</dd></div>
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 p-2"><dt className="block text-amber-800">Текст клиенту:</dt><dd className="mt-1 block whitespace-pre-wrap font-medium text-amber-950">{decision.client_comment}</dd></div>
+                </>
+              )}
             </dl>
           </div>
         )}

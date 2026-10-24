@@ -19,6 +19,7 @@ import {
   Landmark,
   Lightbulb,
   Loader2,
+  LogOut,
   RefreshCw,
   ShieldCheck,
   Sparkles,
@@ -145,20 +146,20 @@ export default function Home() {
   return (
     <div className="min-h-screen bg-neutral-50">
       <header className="sticky top-0 z-20 border-b bg-white/95 backdrop-blur">
-        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4">
-          <Link to="/dashboard" className="flex items-center gap-2">
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#EF3124] text-lg font-black text-white">A</div>
-            <div>
+        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-2 px-4">
+          <Link to="/dashboard" className="flex min-w-0 items-center gap-2">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#EF3124] text-lg font-black text-white">A</div>
+            <div className="max-[359px]:hidden">
               <span className="block text-sm font-bold leading-tight sm:text-base">Кредитный кабинет</span>
               <span className="hidden text-[11px] text-muted-foreground sm:block">Финансирование для бизнеса</span>
             </div>
           </Link>
-          <div className="flex items-center gap-1 text-sm">
+          <div className="flex shrink-0 items-center gap-1 text-sm">
             <span className="mr-2 hidden text-muted-foreground lg:inline">{user?.name}</span>
             <Button asChild variant="ghost" size="sm">
               <Link to="/profile"><UserRound className="h-4 w-4" /> <span className="hidden sm:inline">Профиль и льготы</span><span className="sm:hidden">Профиль</span></Link>
             </Button>
-            <Button variant="ghost" size="sm" onClick={logout}>Выйти</Button>
+            <Button variant="ghost" size="sm" onClick={logout} aria-label="Выйти"><LogOut className="h-4 w-4 max-[359px]:block hidden" /><span className="max-[359px]:hidden">Выйти</span></Button>
           </div>
         </div>
       </header>
@@ -278,7 +279,7 @@ export default function Home() {
                                   <CardTitle className="text-lg">{product.name}</CardTitle>
                                   <CardDescription className="mt-1">{product.tagline}</CardDescription>
                                 </div>
-                                <Badge variant="outline" className={`shrink-0 px-2.5 py-1 font-semibold ${hasLowestPublishedRate ? "border-emerald-300 bg-emerald-50 text-emerald-900" : "border-red-300 bg-red-50 text-red-800"}`}>
+                                <Badge variant="outline" className={`max-w-full whitespace-normal px-3 py-1.5 text-center text-sm font-semibold leading-5 sm:shrink-0 sm:text-base ${hasLowestPublishedRate ? "border-emerald-300 bg-emerald-50 text-emerald-900" : "border-red-300 bg-red-50 text-red-800"}`}>
                                   {hasLowestPublishedRate ? "Минимальная в каталоге" : "Ставка"} · от {product.rate_from}%
                                 </Badge>
                               </div>
@@ -287,12 +288,12 @@ export default function Home() {
                               <p className="text-sm leading-6 text-muted-foreground">{product.description}</p>
                               <div className="flex flex-wrap gap-1.5">
                                 {(JSON.parse(product.features) as string[]).map((feature) => (
-                                  <Badge key={feature} variant="secondary" className="whitespace-normal font-normal leading-5">{feature}</Badge>
+                                  <Badge key={feature} variant="secondary" className="max-w-full shrink whitespace-normal px-3 py-1.5 text-sm font-medium leading-5">{feature}</Badge>
                                 ))}
                               </div>
-                              <dl className="grid grid-cols-2 gap-3 rounded-xl border bg-neutral-50 p-3 text-sm">
-                                <div><dt className="text-xs text-muted-foreground">Диапазон суммы</dt><dd className="mt-1 font-semibold">от {fmtMoney(product.min_amount)} до {fmtMoney(product.max_amount)}</dd></div>
-                                <div><dt className="text-xs text-muted-foreground">Диапазон срока</dt><dd className="mt-1 font-semibold">от {product.term_min} до {product.term_max} мес.</dd></div>
+                              <dl className="grid grid-cols-1 gap-3 rounded-xl border bg-neutral-50 p-3 text-sm sm:grid-cols-2">
+                                <div className="min-w-0"><dt className="text-xs text-muted-foreground">Диапазон суммы</dt><dd className="mt-1 font-semibold [overflow-wrap:anywhere]">от {fmtMoney(product.min_amount)} до {fmtMoney(product.max_amount)}</dd></div>
+                                <div className="min-w-0"><dt className="text-xs text-muted-foreground">Диапазон срока</dt><dd className="mt-1 font-semibold [overflow-wrap:anywhere]">от {product.term_min} до {product.term_max} мес.</dd></div>
                               </dl>
                               <Button className="mt-auto w-full sm:w-fit" size="sm" onClick={() => selectProductForCalculation(product.id)}>
                                 Рассчитать <ArrowRight className="ml-1 h-3.5 w-3.5" />

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { expect, test, type Page } from "@playwright/test";
 
 async function login(page: Page, loginName: string) {
@@ -26,14 +27,14 @@ async function createApplicationViaApi(page: Page, loginName: string, amount: nu
   }, { amount, termMonths });
   expect(calculation.ok, JSON.stringify(calculation.payload)).toBe(true);
   const calculationId = (calculation.payload as { data: { calculation_id: number } }).data.calculation_id;
-  const application = await page.evaluate(async (calculationId) => {
+  const application = await page.evaluate(async ({ calculationId, idempotencyKey }) => {
     const response = await fetch("/api/applications", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() },
+      headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
       body: JSON.stringify({ calculation_id: calculationId, purpose: "Пополнение оборотных средств для тестовой ветки решения" }),
     });
     return { ok: response.ok, payload: await response.json() };
-  }, calculationId);
+  }, { calculationId, idempotencyKey: randomUUID() });
   expect(application.ok, JSON.stringify(application.payload)).toBe(true);
   await page.context().clearCookies();
   return (application.payload as { data: { id: number; public_no: string } }).data;
@@ -66,6 +67,31 @@ test("client can choose an eligible alternative and open its locked application"
   await expect(page.getByText("Параметры зафиксированы расчётом")).toBeVisible();
 });
 
+test("calculator stays within a narrow viewport", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 800 });
+  await login(page, "client1");
+
+  const purposeSelect = page.getByLabel("Цель финансирования");
+  await purposeSelect.click();
+  const listbox = page.getByRole("listbox");
+  await expect(listbox).toBeVisible();
+  const listboxBox = await listbox.boundingBox();
+  expect(listboxBox).not.toBeNull();
+  expect(listboxBox!.x).toBeGreaterThanOrEqual(0);
+  expect(listboxBox!.x + listboxBox!.width).toBeLessThanOrEqual(320);
+  await page.keyboard.press("Escape");
+
+  await page.getByLabel("Точная сумма, ₽").fill("150000000");
+  await page.getByLabel("Желаемый срок, месяцев").fill("84");
+  await page.getByLabel("Цель финансирования").click();
+  await page.getByRole("option", { name: "Оборудование" }).click();
+  await page.getByRole("button", { name: "Подобрать продукт и рассчитать" }).click();
+  await expect(page.getByText("Ориентировочные условия", { exact: true })).toBeVisible();
+
+  const layout = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth }));
+  expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth);
+});
+
 test("canonical client-bank flow reaches issued and recovers a lost accept response", async ({ page }) => {
   await login(page, "client1");
   await page.getByLabel("Точная сумма, ₽").fill("1500000");
@@ -96,6 +122,7 @@ test("canonical client-bank flow reaches issued and recovers a lost accept respo
   await expect(page).toHaveURL(new RegExp(`/bank/applications/${applicationId}$`));
   await expect(page.getByRole("button", { name: "Принять решение" })).toBeVisible();
   await page.getByRole("button", { name: "Подставить в форму" }).click();
+  await page.getByLabel("Текст решения для клиента").fill("Банк одобрил запрошенные условия после проверки предоставленных данных");
   await page.getByRole("button", { name: "Принять решение" }).click();
   await expect(page.getByRole("dialog")).toBeVisible();
   await page.getByRole("dialog").getByRole("button", { name: "Подтвердить решение" }).click();
@@ -161,7 +188,8 @@ test("conditions, more-info and reject decisions are visible to the client", asy
   await openBankDossier(page, conditionsApplication.id);
   await page.getByRole("button", { name: "Изменить условия" }).click();
   await page.getByLabel("Сумма, ₽").fill("7500000");
-  await page.getByLabel("Обоснование").fill("Предлагаем меньшую сумму для устойчивой долговой нагрузки");
+  await page.getByLabel("Внутреннее обоснование банка").fill("Снижение суммы уменьшает расчётную долговую нагрузку");
+  await page.getByLabel("Текст решения для клиента").fill("Предлагаем меньшую сумму для устойчивой долговой нагрузки");
   await confirmBankDecision(page);
   await page.context().clearCookies();
   await login(page, "client2");
@@ -174,7 +202,7 @@ test("conditions, more-info and reject decisions are visible to the client", asy
   await page.getByRole("button", { name: "Запросить инфо" }).click();
   await page.getByLabel("Что требуется").click();
   await page.getByRole("option", { name: "Пояснение клиента" }).click();
-  await page.getByLabel("Точная причина и инструкция клиенту").fill("Поясните назначение крупного платежа поставщику");
+  await page.getByLabel("Причина запроса и инструкция клиенту").fill("Поясните назначение крупного платежа поставщику");
   await confirmBankDecision(page);
   await page.context().clearCookies();
   await login(page, "client1");
@@ -186,7 +214,8 @@ test("conditions, more-info and reject decisions are visible to the client", asy
   const rejectedApplication = await createApplicationViaApi(page, "client3", 1_000_000, 12);
   await openBankDossier(page, rejectedApplication.id);
   await page.getByRole("button", { name: "Отказать" }).click();
-  await page.getByLabel("Обоснование").fill("Длительная просрочка требует восстановления платёжной дисциплины");
+  await page.getByLabel("Внутреннее обоснование банка").fill("Риск превышает допустимый уровень по внутренним правилам");
+  await page.getByLabel("Текст решения для клиента").fill("Длительная просрочка требует восстановления платёжной дисциплины");
   await confirmBankDecision(page);
   await page.context().clearCookies();
   await login(page, "client3");

@@ -114,6 +114,9 @@ function bankUserId(id: number): number {
   return (database.prepare("SELECT id FROM users WHERE login = ? AND role = 'BANK'").get(`bank-${fixtureId}`) as { id: number }).id;
 }
 
+const APPROVAL_INTERNAL_REASON = "Проверка риск-факторов и подтверждённой отчётности пройдена по внутренней методике.";
+const APPROVAL_CLIENT_COMMENT = "Банк одобрил заявку на запрошенных условиях.";
+
 function approveByBank(id: number) {
   const row = application(id);
   const product = database.prepare("SELECT id, name, rate_from FROM products WHERE id = ?").get(row.product_id) as { id: number; name: string; rate_from: number }; 
@@ -122,7 +125,9 @@ function approveByBank(id: number) {
     rate: product.rate_from,
     amount: row.amount as number,
     termMonths: row.term_months as number,
-    reason: "Сотрудник банка подтвердил предварительную рекомендацию.",
+    reason: APPROVAL_CLIENT_COMMENT,
+    internalReason: APPROVAL_INTERNAL_REASON,
+    clientComment: APPROVAL_CLIENT_COMMENT,
     productId: product.id,
     productName: product.name,
   }, "Тестовый аналитик", bankUserId(id));
@@ -231,6 +236,13 @@ describe("credit conveyor", () => {
     approveByBank(id);
     expect(application(id).status).toBe("OFFER");
     expect(application(id).decided_by).toBe(bankUserId(id));
+    expect(JSON.parse(application(id).decision as string)).toMatchObject({
+      internalReason: APPROVAL_INTERNAL_REASON,
+      clientComment: APPROVAL_CLIENT_COMMENT,
+      reason: APPROVAL_CLIENT_COMMENT,
+    });
+    expect(database.prepare("SELECT comment FROM application_events WHERE application_id = ? ORDER BY id DESC LIMIT 1").get(id))
+      .toEqual({ comment: APPROVAL_CLIENT_COMMENT });
 
     conveyor.clientAcceptOffer(id);
     expect(application(id).status).toBe("SIGNING");
@@ -238,6 +250,17 @@ describe("credit conveyor", () => {
     expect(generated).toHaveLength(3);
     expect(new Set(generated.map((document) => document.content_hash)).size).toBe(3);
     expect(generated.every((document) => document.document_version === "credit-docs-v2")).toBe(true);
+    const contract = generated.find((document) => document.kind === "Кредитный договор");
+    expect(contract).toBeDefined();
+    const contractContent = documents.downloadableDocument(contract!.id).content;
+    expect(contractContent).toContain(APPROVAL_CLIENT_COMMENT);
+    expect(contractContent).not.toContain(APPROVAL_INTERNAL_REASON);
+    database.prepare(`
+      INSERT INTO documents (
+        application_id, kind, filename, status, document_version, content_hash, content_text, created_at
+      ) VALUES (?, 'Кредитный договор', 'legacy-contract.txt', 'UNAVAILABLE',
+        'legacy-unavailable-v2', 'legacy-hash', NULL, ?)
+    `).run(id, new Date().toISOString());
 
     const clientId = application(id).client_id as number;
     expect(() => conveyor.clientSign(id, clientId)).toThrow("Сначала скачайте документ");

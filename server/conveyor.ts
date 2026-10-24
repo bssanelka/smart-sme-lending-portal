@@ -68,6 +68,19 @@ export const CLIENT_VISIBLE_FLOW = ["SUBMITTED", "DATA_CHECK", "ENRICHMENT", "SC
 type Row = Record<string, unknown>;
 
 type RiskGrade = "A" | "B" | "C" | "D";
+type MoreInfoDecisionProposal = DecisionProposal & {
+  type: "MORE_INFO";
+  internalReason?: never;
+  clientComment?: never;
+};
+
+type FinalBankDecisionProposal = DecisionProposal & {
+  type: "APPROVE" | "CONDITIONS" | "REJECT";
+  internalReason: string;
+  clientComment: string;
+};
+
+type BankDecisionProposal = MoreInfoDecisionProposal | FinalBankDecisionProposal;
 
 export interface RecommendationSnapshot {
   id: number;
@@ -339,7 +352,7 @@ function preliminaryTermsFor(app: Row): PreliminaryTerms | null {
 
 const applyDecisionTransaction = db.transaction((
   applicationId: number,
-  proposal: DecisionProposal,
+  proposal: BankDecisionProposal,
   actor: string,
   decidedBy: number | null,
   moreInfoRequest?: MoreInfoRequestInput,
@@ -399,8 +412,11 @@ const applyDecisionTransaction = db.transaction((
       productName: selectedProduct.name as string,
     };
   }
+  const clientComment = proposal.clientComment;
   const decisionPayload = {
     ...canonicalProposal,
+    reason: clientComment,
+    clientComment,
     decidedAt,
     ...(preliminaryTerms ? { preliminaryTerms } : {}),
     ...(isOffer && financialReport ? { financialReportSnapshot: financialReport } : {}),
@@ -413,15 +429,15 @@ const applyDecisionTransaction = db.transaction((
   db.prepare("UPDATE applications SET decision = ?, decided_by = ?, decided_at = ?, updated_at = ? WHERE id = ?")
     .run(decision, decidedBy, decidedAt, decidedAt, applicationId);
   if (isOffer) {
-    setStatus(app, "OFFER", actor, proposal.reason);
+    setStatus(app, "OFFER", actor, clientComment);
   } else {
-    setStatus(app, "REJECTED", actor, proposal.reason);
+    setStatus(app, "REJECTED", actor, clientComment);
   }
 });
 
 export function applyDecision(
   applicationId: number,
-  proposal: DecisionProposal,
+  proposal: BankDecisionProposal,
   actor: string,
   decidedBy: number,
   moreInfoRequest?: MoreInfoRequestInput,

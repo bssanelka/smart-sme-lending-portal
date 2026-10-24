@@ -105,6 +105,53 @@ describe("HTTP authentication, RBAC and command boundaries", () => {
     expect(await response.json()).toEqual({ ok: false, error: expect.any(String) });
   });
 
+  it("restricts benefit preview to clients and validates the request strictly", async () => {
+    const clientCookie = await login("client1");
+    const bankCookie = await login("bank");
+    const body = {
+      region: "Москва",
+      sme_status: "micro",
+      purpose: "investment",
+      amount: 2_000_000,
+      term_months: 24,
+      industry: "56.10 · Деятельность ресторанов и услуги по доставке продуктов питания",
+    };
+    const request = (cookie?: string, requestBody: Record<string, unknown> = body) => {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (cookie) headers.Cookie = cookie;
+      return app.request("/api/client/profile/benefits/preview", {
+        method: "POST",
+        headers,
+        body: JSON.stringify(requestBody),
+      });
+    };
+
+    expect((await request()).status).toBe(401);
+    expect((await request(bankCookie)).status).toBe(403);
+
+    const response = await request(clientCookie);
+    expect(response.status).toBe(200);
+    const payload = await response.json() as {
+      data: { items: Array<Record<string, unknown>>; metadata: Record<string, unknown> };
+    };
+    expect(payload.data.metadata).toEqual({
+      eligibilityChecked: false,
+      externalDataUsed: false,
+      answersPersisted: false,
+    });
+    expect(payload.data.items.length).toBeGreaterThan(0);
+    expect(payload.data.items[0]).toEqual(expect.objectContaining({
+      item: expect.any(Object),
+      reasons: expect.any(Array),
+      unknowns: expect.any(Array),
+    }));
+    expect(payload.data.items[0]).not.toHaveProperty("score");
+
+    const invalid = await request(clientCookie, { ...body, unexpected: true });
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toEqual({ ok: false, error: expect.any(String) });
+  });
+
   it("returns server-calculated economics for every eligible product option", async () => {
     const clientCookie = await login("client1");
     const response = await authenticatedRequest("/api/calculator/evaluate", clientCookie, {
@@ -261,7 +308,11 @@ describe("HTTP authentication, RBAC and command boundaries", () => {
     const request = () => authenticatedRequest(`/api/bank/applications/${applicationId}/decision`, bankCookie, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Idempotency-Key": key },
-      body: JSON.stringify({ type: "REJECT", reason: "Недостаточная устойчивость денежного потока" }),
+      body: JSON.stringify({
+        type: "REJECT",
+        internal_reason: "Внутренняя оценка денежного потока не соответствует риск-политике",
+        client_comment: "Не можем одобрить заявку из-за недостаточной устойчивости денежного потока",
+      }),
     });
 
     const first = await request();
@@ -271,6 +322,117 @@ describe("HTTP authentication, RBAC and command boundaries", () => {
     expect(database.prepare("SELECT status FROM applications WHERE id = ?").get(applicationId)).toEqual({ status: "REJECTED" });
     expect(replay.status).toBe(200);
     expect(replay.headers.get("Idempotency-Replayed")).toBe("true");
+  });
+
+  it.each([
+    ["offer without internal_reason", {
+      type: "APPROVE", rate: 20, amount: 1_000_000, term_months: 12,
+      client_comment: "Кредит одобрен на запрошенных условиях",
+    }],
+    ["offer without client_comment", {
+      type: "APPROVE", rate: 20, amount: 1_000_000, term_months: 12,
+      internal_reason: "Риск-профиль соответствует политике банка",
+    }],
+    ["reject without internal_reason", {
+      type: "REJECT", client_comment: "Банк не может одобрить заявку",
+    }],
+    ["reject without client_comment", {
+      type: "REJECT", internal_reason: "Риск-профиль не соответствует политике банка",
+    }],
+  ])("validates separated decision text fields for %s", async (_caseName, body) => {
+    const bankCookie = await login("bank");
+    const applicationId = createApplication("DECISION");
+    const response = await authenticatedRequest(`/api/bank/applications/${applicationId}/decision`, bankCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() },
+      body: JSON.stringify(body),
+    });
+
+    expect(response.status).toBe(400);
+    expect(database.prepare("SELECT status, decision FROM applications WHERE id = ?").get(applicationId))
+      .toEqual({ status: "DECISION", decision: null });
+  });
+
+  it("accepts and replays the deprecated single-reason decision contract without leaking it as internal rationale", async () => {
+    const bankCookie = await login("bank");
+    const clientCookie = await login("client1");
+    const applicationId = createApplication("DECISION");
+    const key = crypto.randomUUID();
+    const legacyReason = "Банк не может одобрить заявку по результатам проверки предоставленных данных";
+    const request = () => authenticatedRequest(`/api/bank/applications/${applicationId}/decision`, bankCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": key },
+      body: JSON.stringify({ type: "REJECT", reason: legacyReason }),
+    });
+
+    const first = await request();
+    const replay = await request();
+    const bankPayload = await first.json() as { data: { decision: Record<string, unknown> } };
+    const clientResponse = await authenticatedRequest(`/api/applications/${applicationId}`, clientCookie);
+    const clientPayload = await clientResponse.json() as { data: { decision: Record<string, unknown> } };
+
+    expect(first.status).toBe(200);
+    expect(replay.status).toBe(200);
+    expect(replay.headers.get("Idempotency-Replayed")).toBe("true");
+    expect(bankPayload.data.decision).toMatchObject({
+      reason: legacyReason,
+      clientComment: legacyReason,
+      internalReason: expect.stringContaining("устаревший API-контракт"),
+    });
+    expect(clientPayload.data.decision).toMatchObject({ reason: legacyReason, clientComment: legacyReason });
+    expect(clientPayload.data.decision).not.toHaveProperty("internalReason");
+  });
+
+  it("keeps internal rationale bank-only and exposes the client comment through both public aliases", async () => {
+    const bankCookie = await login("bank");
+    const clientCookie = await login("client1");
+    const applicationId = createApplication("DECISION");
+    const internalReason = "Внутренний триггер AML-RISK-42 требует отказа";
+    const clientComment = "Банк не может одобрить заявку по результатам комплексной оценки";
+    const response = await authenticatedRequest(`/api/bank/applications/${applicationId}/decision`, bankCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() },
+      body: JSON.stringify({ type: "REJECT", internal_reason: internalReason, client_comment: clientComment }),
+    });
+    const bankPayload = await response.json() as { data: { decision: Record<string, unknown> } };
+
+    expect(response.status).toBe(200);
+    expect(bankPayload.data.decision).toMatchObject({
+      internalReason,
+      clientComment,
+      reason: clientComment,
+    });
+
+    const clientResponse = await authenticatedRequest(`/api/applications/${applicationId}`, clientCookie);
+    const clientPayload = await clientResponse.json() as { data: { decision: Record<string, unknown>; events: Array<{ comment: string | null }> } };
+    const serialized = JSON.stringify(clientPayload);
+
+    expect(clientResponse.status).toBe(200);
+    expect(clientPayload.data.decision).toMatchObject({ clientComment, reason: clientComment });
+    expect(clientPayload.data.decision).not.toHaveProperty("internalReason");
+    expect(clientPayload.data.events.at(-1)?.comment).toBe(clientComment);
+    expect(serialized).not.toContain(internalReason);
+  });
+
+  it("keeps a persisted legacy decision reason out of the client projection", async () => {
+    const clientCookie = await login("client1");
+    const applicationId = createOffer();
+    database.prepare(`
+      INSERT INTO application_events (application_id, from_status, to_status, actor, comment, created_at)
+      VALUES (?, 'DECISION', 'OFFER', 'Legacy bank', 'Тестовое предложение', ?)
+    `).run(applicationId, new Date().toISOString());
+    const response = await authenticatedRequest(`/api/applications/${applicationId}`, clientCookie);
+    const payload = await response.json() as { data: { decision: Record<string, unknown>; events: Array<{ comment: string | null }> } };
+    const serialized = JSON.stringify(payload);
+
+    expect(response.status).toBe(200);
+    expect(payload.data.decision).toMatchObject({
+      reason: "Банк одобрил заявку на предложенных условиях после проверки предоставленных данных.",
+      clientComment: "Банк одобрил заявку на предложенных условиях после проверки предоставленных данных.",
+    });
+    expect(payload.data.decision).not.toHaveProperty("internalReason");
+    expect(payload.data.events.at(-1)?.comment).toBe("Банк одобрил заявку на предложенных условиях после проверки предоставленных данных.");
+    expect(serialized).not.toContain("Тестовое предложение");
   });
 
   it("supports the structured MORE_INFO decision branch", async () => {
@@ -301,7 +463,11 @@ describe("HTTP authentication, RBAC and command boundaries", () => {
     const response = await authenticatedRequest(`/api/bank/applications/${applicationId}/decision`, bankCookie, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() },
-      body: JSON.stringify({ type: "REJECT", reason: "Недостаточно подтверждающих сведений" }),
+      body: JSON.stringify({
+        type: "REJECT",
+        internal_reason: "Не получены подтверждения, необходимые по внутренней риск-политике",
+        client_comment: "Не можем принять решение без запрошенных подтверждающих сведений",
+      }),
     });
 
     expect(response.status).toBe(409);

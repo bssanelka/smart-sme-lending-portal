@@ -167,7 +167,8 @@ Idempotency-Key: {{runId}}-decision
   "rate": {{bankRecommendation.response.body.$.data.proposal.rate}},
   "amount": {{calculator.response.body.$.data.selection.recommended.amount}},
   "term_months": {{calculator.response.body.$.data.selection.recommended.termMonths}},
-  "reason": "Низкий риск: сотрудник банка подтвердил условия после проверки досье."
+  "internal_reason": "Риск-профиль и подтверждённая отчётность соответствуют внутренним правилам банка.",
+  "client_comment": "Банк одобрил заявку на предложенных условиях после проверки предоставленных данных."
 }
 
 ### 15. Optional template dossier summary

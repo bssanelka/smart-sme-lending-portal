@@ -80,31 +80,31 @@ function impactClass(impact: CalculatorPublicFactor["impact"]) {
 function Metrics({ metrics, forecast = false }: { metrics: CalculatorMetrics; forecast?: boolean }) {
   const metricClass = forecast ? "border-blue-200 bg-white" : "border-amber-200 bg-white";
   return (
-    <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
-      <div className={`col-span-2 rounded-xl border p-4 lg:col-span-2 ${metricClass}`}>
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-6">
+      <div className={`min-w-0 rounded-xl border p-4 sm:col-span-2 lg:col-span-2 ${metricClass}`}>
         <p className="text-xs text-muted-foreground">Индекс соответствия<TermHint term="compatibility" /></p>
-        <p className="mt-2 text-3xl font-black numeric-tabular sm:text-4xl">{metrics.compatibilityIndex} <span className="text-base font-semibold">из 100</span></p>
+        <p className="mt-2 text-3xl font-black leading-tight numeric-tabular [overflow-wrap:anywhere] sm:text-4xl">{metrics.compatibilityIndex} <span className="text-base font-semibold">из 100</span></p>
         <p className="mt-1 text-xs text-muted-foreground">{compatibilityLabel(metrics.compatibilityLevel)}</p>
       </div>
-      <div className={`col-span-1 rounded-xl border p-4 lg:col-span-2 ${metricClass}`}>
+      <div className={`min-w-0 rounded-xl border p-4 lg:col-span-2 ${metricClass}`}>
         <p className="text-xs text-muted-foreground">Ориентир ставки</p>
-        <p className="mt-2 text-2xl font-black numeric-tabular sm:text-3xl">{percent(metrics.rate)}</p>
+        <p className="mt-2 text-2xl font-black leading-tight numeric-tabular [overflow-wrap:anywhere] sm:text-3xl">{percent(metrics.rate)}</p>
       </div>
-      <div className={`col-span-1 rounded-xl border p-4 lg:col-span-2 ${metricClass}`}>
+      <div className={`min-w-0 rounded-xl border p-4 lg:col-span-2 ${metricClass}`}>
         <p className="text-xs text-muted-foreground">Платёж в месяц</p>
-        <p className="mt-2 text-xl font-black numeric-tabular sm:text-3xl">{fmtMoney(metrics.monthlyPayment)}</p>
+        <p className="mt-2 text-xl font-black leading-tight numeric-tabular [overflow-wrap:anywhere] sm:text-3xl">{fmtMoney(metrics.monthlyPayment)}</p>
       </div>
-      <div className={`rounded-xl border p-4 lg:col-span-2 ${metricClass}`}>
+      <div className={`min-w-0 rounded-xl border p-4 lg:col-span-2 ${metricClass}`}>
         <p className="text-xs text-muted-foreground">Переплата<TermHint term="overpayment" /></p>
-        <p className="mt-1 text-lg font-bold numeric-tabular sm:text-xl">{fmtMoney(metrics.overpayment)}</p>
+        <p className="mt-1 text-lg font-bold leading-tight numeric-tabular [overflow-wrap:anywhere] sm:text-xl">{fmtMoney(metrics.overpayment)}</p>
       </div>
-      <div className={`rounded-xl border p-4 lg:col-span-2 ${metricClass}`}>
+      <div className={`min-w-0 rounded-xl border p-4 lg:col-span-2 ${metricClass}`}>
         <p className="text-xs text-muted-foreground">Общая выплата</p>
-        <p className="mt-1 text-lg font-bold numeric-tabular sm:text-xl">{fmtMoney(metrics.totalPayment)}</p>
+        <p className="mt-1 text-lg font-bold leading-tight numeric-tabular [overflow-wrap:anywhere] sm:text-xl">{fmtMoney(metrics.totalPayment)}</p>
       </div>
-      <div className={`rounded-xl border p-4 lg:col-span-2 ${metricClass}`}>
+      <div className={`min-w-0 rounded-xl border p-4 lg:col-span-2 ${metricClass}`}>
         <p className="text-xs text-muted-foreground">Кредитный потенциал<TermHint term="creditPotential" /></p>
-        <p className="mt-1 text-lg font-bold numeric-tabular sm:text-xl">{fmtMoney(metrics.creditPotential)}</p>
+        <p className="mt-1 text-lg font-bold leading-tight numeric-tabular [overflow-wrap:anywhere] sm:text-xl">{fmtMoney(metrics.creditPotential)}</p>
       </div>
     </div>
   );
@@ -125,9 +125,9 @@ function ScenarioComparison({ current, forecast }: { current: CalculatorMetrics;
       </div>
       {values.map((value) => (
         <div key={value.label} className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)] gap-2 border-t px-3 py-3 text-xs sm:text-sm">
-          <span className="text-muted-foreground">{value.label}</span>
-          <strong className="numeric-tabular">{value.current}</strong>
-          <strong className="numeric-tabular text-blue-900">{value.forecast}</strong>
+          <span className="min-w-0 break-words text-muted-foreground">{value.label}</span>
+          <strong className="min-w-0 numeric-tabular [overflow-wrap:anywhere]">{value.current}</strong>
+          <strong className="min-w-0 text-blue-900 numeric-tabular [overflow-wrap:anywhere]">{value.forecast}</strong>
         </div>
       ))}
     </div>
@@ -180,40 +180,40 @@ interface ProductOptionProps {
 function ProductOption({ option, primary = false, selectedByClient = false, onApply, applyBusy = false }: ProductOptionProps) {
 
   return (
-    <div className={`flex h-full flex-col rounded-xl border p-4 ${primary ? "border-emerald-300 bg-emerald-50/60" : "bg-white"}`}>
-      <div className="flex flex-wrap items-start justify-between gap-2">
+    <div className={`flex h-full min-w-0 flex-col rounded-xl border p-4 ${primary ? "border-emerald-300 bg-emerald-50/60" : "bg-white"}`}>
+      <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
-          <p className="flex items-center gap-2 font-semibold">
+          <p className="flex min-w-0 items-center gap-2 break-words font-semibold">
             {primary ? <BadgeCheck className="h-5 w-5 shrink-0 text-emerald-700" /> : <Landmark className="h-4 w-4 shrink-0 text-muted-foreground" />}
             {option.product.name}
           </p>
           <p className="mt-1 text-xs leading-5 text-muted-foreground">{option.product.tagline}</p>
         </div>
-        <div className="flex flex-wrap justify-end gap-1.5">
-          {selectedByClient && <Badge variant="outline" className="border-blue-300 bg-blue-50 text-blue-900">Выбран вами</Badge>}
-          <Badge variant="outline" className={option.exactMatch ? "border-emerald-300 bg-emerald-50 text-emerald-900" : "border-amber-300 bg-amber-50 text-amber-950"}>
+        <div className="flex max-w-full flex-wrap justify-end gap-1.5">
+          {selectedByClient && <Badge variant="outline" className="whitespace-normal border-blue-300 bg-blue-50 px-3 py-1 text-sm leading-5 text-blue-900">Выбран вами</Badge>}
+          <Badge variant="outline" className={`whitespace-normal px-3 py-1 text-sm leading-5 ${option.exactMatch ? "border-emerald-300 bg-emerald-50 text-emerald-900" : "border-amber-300 bg-amber-50 text-amber-950"}`}>
             {option.exactMatch ? "Сумма и срок подходят" : "Сумма или срок скорректированы"}
           </Badge>
         </div>
       </div>
-      <div className="mt-4 grid grid-cols-2 gap-3">
-        <div className="rounded-xl bg-white p-3">
+      <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="min-w-0 rounded-xl bg-white p-3">
           <p className="text-xs text-muted-foreground">Сумма предложения</p>
-          <p className="mt-1 text-2xl font-black numeric-tabular sm:text-3xl">{fmtMoney(option.amount)}</p>
+          <p className="mt-1 text-2xl font-black leading-tight numeric-tabular [overflow-wrap:anywhere] sm:text-3xl">{fmtMoney(option.amount)}</p>
         </div>
-        <div className="rounded-xl bg-white p-3">
+        <div className="min-w-0 rounded-xl bg-white p-3">
           <p className="text-xs text-muted-foreground">Срок</p>
-          <p className="mt-1 text-2xl font-black numeric-tabular sm:text-3xl">{option.termMonths} <span className="text-base font-semibold">мес.</span></p>
+          <p className="mt-1 text-2xl font-black leading-tight numeric-tabular [overflow-wrap:anywhere] sm:text-3xl">{option.termMonths} <span className="text-base font-semibold">мес.</span></p>
         </div>
       </div>
       {!primary && (
         <div className="mt-3 space-y-2 rounded-xl bg-neutral-50 p-3">
-          <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-sm">
+          <dl className="grid grid-cols-1 gap-x-3 gap-y-2 text-sm sm:grid-cols-2">
             <div><dt className="text-xs text-muted-foreground">Ориентировочная ставка</dt><dd className="font-semibold numeric-tabular">{option.economics.rate.toLocaleString("ru-RU")}%</dd></div>
-            <div><dt className="text-xs text-muted-foreground">Платёж в месяц</dt><dd className="font-semibold numeric-tabular">{fmtMoney(option.economics.monthlyPayment)}</dd></div>
-            <div><dt className="text-xs text-muted-foreground">Переплата</dt><dd className="font-semibold numeric-tabular">{fmtMoney(option.economics.overpayment)}</dd></div>
-            <div><dt className="text-xs text-muted-foreground">Общая выплата</dt><dd className="font-semibold numeric-tabular">{fmtMoney(option.economics.totalPayment)}</dd></div>
-            <div className="col-span-2"><dt className="text-xs text-muted-foreground">Индекс соответствия</dt><dd className="font-semibold numeric-tabular">{option.economics.compatibilityIndex} из 100 · {compatibilityLabel(option.economics.compatibilityLevel)}</dd></div>
+            <div className="min-w-0"><dt className="text-xs text-muted-foreground">Платёж в месяц</dt><dd className="font-semibold numeric-tabular [overflow-wrap:anywhere]">{fmtMoney(option.economics.monthlyPayment)}</dd></div>
+            <div className="min-w-0"><dt className="text-xs text-muted-foreground">Переплата</dt><dd className="font-semibold numeric-tabular [overflow-wrap:anywhere]">{fmtMoney(option.economics.overpayment)}</dd></div>
+            <div className="min-w-0"><dt className="text-xs text-muted-foreground">Общая выплата</dt><dd className="font-semibold numeric-tabular [overflow-wrap:anywhere]">{fmtMoney(option.economics.totalPayment)}</dd></div>
+            <div className="min-w-0 sm:col-span-2"><dt className="text-xs text-muted-foreground">Индекс соответствия</dt><dd className="break-words font-semibold numeric-tabular">{option.economics.compatibilityIndex} из 100 · {compatibilityLabel(option.economics.compatibilityLevel)}</dd></div>
           </dl>
           <p className="text-[11px] leading-4 text-muted-foreground">Предварительный расчёт, а не решение или оферта банка.</p>
         </div>
@@ -353,24 +353,24 @@ export default function CreditCalculator({ selectedProduct }: { selectedProduct?
         <CardContent>
           <form onSubmit={calculate} className="space-y-4">
             <div className="grid items-start gap-4 md:grid-cols-3">
-              <div className="space-y-1.5">
+              <div className="min-w-0 space-y-1.5">
                 <Label htmlFor="calculator-category">Для чего нужны деньги</Label>
                 <Select value={category} onValueChange={(value) => { setCategory(value); resetResult(); }}>
-                  <SelectTrigger id="calculator-category" className="w-full" aria-label="Цель финансирования"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {PURPOSE_CATEGORIES.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}
-                    <SelectItem value={OTHER_PURPOSE}>Другое</SelectItem>
+                  <SelectTrigger id="calculator-category" className="w-full min-w-0 text-left" aria-label="Цель финансирования"><SelectValue className="min-w-0 flex-1 text-left" /></SelectTrigger>
+                  <SelectContent position="popper" align="start" sideOffset={4} className="w-[var(--radix-select-trigger-width)] max-w-[calc(100vw-2rem)]">
+                    {PURPOSE_CATEGORIES.map((item) => <SelectItem className="min-h-11 whitespace-normal py-2.5 text-base leading-5" key={item.value} value={item.value}>{item.label}</SelectItem>)}
+                    <SelectItem className="min-h-11 whitespace-normal py-2.5 text-base leading-5" value={OTHER_PURPOSE}>Другое</SelectItem>
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">Выберите ближайшую задачу бизнеса</p>
               </div>
-              <div className="space-y-1.5">
+              <div className="min-w-0 space-y-1.5">
                 <Label htmlFor="calculator-amount">Точная сумма, ₽</Label>
                 <Input id="calculator-amount" type="number" min="100000" max="150000000" step="1000" value={amount}
                   onChange={(event) => { setAmount(event.target.value); resetResult(); }} required />
                 <p className="text-xs text-muted-foreground">От 100 тыс. до 150 млн ₽</p>
               </div>
-              <div className="space-y-1.5">
+              <div className="min-w-0 space-y-1.5">
                 <Label htmlFor="calculator-term">Желаемый срок, месяцев</Label>
                 <Input id="calculator-term" type="number" min="3" max="84" value={term}
                   onChange={(event) => { setTerm(event.target.value); resetResult(); }} required />
@@ -397,7 +397,7 @@ export default function CreditCalculator({ selectedProduct }: { selectedProduct?
                 ? <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-950" role="alert"><p className="font-semibold">{selectedProductName} сейчас недоступен</p><p className="mt-1">{error}</p><p className="mt-2 text-xs">Снимите выбор и повторите расчёт — сервер покажет только альтернативы, прошедшие проверку доступности.</p><Button type="button" variant="outline" size="sm" className="mt-3 border-red-200 bg-white" onClick={clearSelectedProduct}>Подобрать альтернативы</Button></div>
                 : <p className="text-sm text-red-600" role="alert">{error}</p>)}
             <div className="flex flex-col items-start gap-2">
-              <Button type="submit" className="w-full sm:w-auto" disabled={busy} aria-busy={busy}>
+              <Button type="submit" className="h-auto min-w-0 w-full whitespace-normal py-3 text-center leading-5 sm:w-auto" disabled={busy} aria-busy={busy}>
                 {busy ? <Loader2 className="animate-spin" /> : <Sparkles />} {selectedProductId ? "Проверить продукт и рассчитать" : "Подобрать продукт и рассчитать"}
               </Button>
               {busy && <p className="flex items-center gap-2 text-sm text-muted-foreground" role="status" aria-live="polite"><Loader2 className="h-4 w-4 animate-spin" /> Подбираем предложения и рассчитываем условия…</p>}
@@ -438,7 +438,7 @@ export default function CreditCalculator({ selectedProduct }: { selectedProduct?
             <CardHeader>
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <CardTitle className="text-xl">Ориентировочные условия</CardTitle>
-                <Badge className="w-fit border-amber-300 bg-amber-100 text-amber-950"><CircleAlert className="mr-1 h-3.5 w-3.5" /> Только предварительный расчёт</Badge>
+                <Badge className="w-fit max-w-full whitespace-normal border-amber-300 bg-amber-100 px-3 py-1 text-sm leading-5 text-amber-950"><CircleAlert className="mr-1 h-4 w-4" /> Только предварительный расчёт</Badge>
               </div>
               <CardDescription>Это автоматическая оценка до заявки. Сотрудник банка ещё не принимал решение.</CardDescription>
             </CardHeader>
@@ -455,7 +455,7 @@ export default function CreditCalculator({ selectedProduct }: { selectedProduct?
                           <p className="text-sm font-medium">{factor.label}{factor.key === "bki" && <TermHint term="bki" />}{factor.key === "pdn" && <TermHint term="pdn" />}: <span className="font-normal text-muted-foreground">{factor.value}</span></p>
                           <p className="mt-0.5 text-xs text-muted-foreground">{factor.explanation}</p>
                         </div>
-                        <Badge variant="outline" className={`w-fit shrink-0 ${impactClass(factor.impact)}`}>{impactLabel(factor.impact)}</Badge>
+                        <Badge variant="outline" className={`w-fit shrink-0 px-3 py-1 text-sm leading-5 ${impactClass(factor.impact)}`}>{impactLabel(factor.impact)}</Badge>
                       </div>
                     ))}
                   </div>
@@ -475,7 +475,7 @@ export default function CreditCalculator({ selectedProduct }: { selectedProduct?
                             <p className="mt-1 text-xs text-muted-foreground">{recommendation.description}</p>
                             {recommendation.kind === "refinancing" && (
                               <div className="mt-3 space-y-2">
-                                <Badge variant="outline" className="border-blue-300 bg-white text-blue-800">Идея, не расчёт</Badge>
+                                <Badge variant="outline" className="border-blue-300 bg-white px-3 py-1 text-sm leading-5 text-blue-800">Идея, не расчёт</Badge>
                                 <p className="text-xs text-blue-950">Для сравнения нужны: {recommendation.requiredData?.join(", ")}. Новый платёж, экономия и общая стоимость не рассчитаны.</p>
                               </div>
                             )}
@@ -494,8 +494,8 @@ export default function CreditCalculator({ selectedProduct }: { selectedProduct?
               </div>
 
               <div className="border-t border-amber-200 pt-5">
-                <Button asChild className="w-full sm:w-auto">
-                  <Link to={applyUrl}>Перейти к заявке после ознакомления с расчётом <ArrowRight /></Link>
+                <Button asChild className="h-auto min-w-0 w-full whitespace-normal py-3 text-center leading-5 sm:w-auto">
+                  <Link to={applyUrl}>Перейти к заявке после ознакомления с расчётом <ArrowRight className="shrink-0" /></Link>
                 </Button>
               </div>
             </CardContent>

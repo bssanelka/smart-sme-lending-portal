@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { selectBenefits, type BenefitContext } from "../server/benefits";
+import { previewBenefits, selectBenefits, type BenefitContext } from "../server/benefits";
 
 const restaurant: BenefitContext = {
   company: {
@@ -39,6 +39,69 @@ function expectCompleteDemoDirection(item: ReturnType<typeof selectBenefits>[num
   expect(item.whyMatches).toEqual(item.observedCriteria);
   expect(item.requirements).toEqual([...item.unknownCriteria, ...item.requiredEvidence]);
 }
+
+describe("benefit preview", () => {
+  it("filters and orders selected directions by structured purpose rules", () => {
+    const selected = selectBenefits(restaurant);
+    const result = previewBenefits(selected, {
+      region: "Москва",
+      sme_status: "micro",
+      purpose: "investment",
+      amount: 3_000_000,
+      term_months: 24,
+      industry: "56.10 · Деятельность ресторанов и услуги по доставке продуктов питания",
+    }, {
+      okvedCode: "56.10",
+      okvedName: "Деятельность ресторанов и услуги по доставке продуктов питания",
+    });
+
+    expect(result.items.map(({ item }) => item.id)).toEqual([
+      "food-service-modernization",
+      "sme-preferential-financing",
+    ]);
+    expect(result.metadata).toEqual({
+      eligibilityChecked: false,
+      externalDataUsed: false,
+      answersPersisted: false,
+    });
+    expect(result.items[0]).not.toHaveProperty("score");
+    expect(result.items[0]?.reasons.join(" ")).toContain("каноническим ОКВЭД 56.10");
+    expect(result.items[0]?.unknowns.join(" ")).toContain("нет подтверждённых региональных ограничений");
+    expect(result.items[0]?.unknowns.join(" ")).toContain("нет структурированных лимитов суммы");
+    expect(result.items[0]?.unknowns.join(" ")).toContain("нет структурированных ограничений срока");
+    expect(result.items[1]?.unknowns.join(" ")).toContain("нет структурированных отраслевых ограничений");
+  });
+
+  it("excludes explicit SME-only directions for a non-SME answer", () => {
+    const result = previewBenefits(selectBenefits(restaurant), {
+      region: "Москва",
+      sme_status: "not_sme",
+      purpose: "investment",
+      industry: "Другая отрасль",
+    }, {
+      okvedCode: "56.10",
+      okvedName: "Деятельность ресторанов и услуги по доставке продуктов питания",
+    });
+
+    expect(result.items.map(({ item }) => item.id)).toEqual(["food-service-modernization"]);
+    expect(result.items[0]?.unknowns.join(" ")).toContain("а не свободный текст ответа");
+  });
+
+  it("keeps deterministic catalog order for an unsupported custom purpose", () => {
+    const selected = selectBenefits(restaurant);
+    const result = previewBenefits(selected, {
+      region: "Москва",
+      sme_status: "unknown",
+      purpose: "other",
+    }, {
+      okvedCode: "56.10",
+      okvedName: "Деятельность ресторанов и услуги по доставке продуктов питания",
+    });
+
+    expect(result.items.map(({ item }) => item.id)).toEqual(selected.map(({ id }) => id));
+    expect(result.items.every(({ unknowns }) => unknowns.some((unknown) => unknown.includes("нет структурированного правила совместимости")))).toBe(true);
+  });
+});
 
 describe("benefit matching", () => {
   it("matches general SME and industry ideas for a restaurant", () => {

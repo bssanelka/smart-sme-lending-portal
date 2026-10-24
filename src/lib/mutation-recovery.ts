@@ -10,11 +10,18 @@ function toError(reason: unknown, fallback: string): Error {
   return reason instanceof Error ? reason : new Error(fallback);
 }
 
+function createMutationKey(): string {
+  if (typeof window.crypto?.randomUUID === "function") return window.crypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  window.crypto.getRandomValues(bytes);
+  return `cmd-${Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("")}`;
+}
+
 export function getMutationKey(scope: string): string {
   const storageKey = `credit-command:${scope}`;
   const existing = window.sessionStorage.getItem(storageKey);
   if (existing) return existing;
-  const key = window.crypto.randomUUID();
+  const key = createMutationKey();
   window.sessionStorage.setItem(storageKey, key);
   return key;
 }

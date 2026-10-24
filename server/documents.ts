@@ -66,7 +66,9 @@ function packageInput(applicationId: number, generatedAt: string): DocumentPacka
     companyHeadName: row.company_head_name as string,
     productName: typeof decision.productName === "string" ? decision.productName : row.source_product_name as string,
     purpose: row.purpose as string,
-    decisionReason: typeof decision.reason === "string" ? decision.reason : null,
+    decisionReason: typeof decision.clientComment === "string"
+      ? decision.clientComment
+      : typeof decision.reason === "string" ? decision.reason : null,
     decidedAt: typeof decision.decidedAt === "string" ? decision.decidedAt : row.decided_at as string,
     generatedAt,
     economics,
@@ -112,6 +114,9 @@ export function downloadableDocument(documentId: number): DocumentMetadata & { c
     FROM documents WHERE id = ?
   `).get(documentId) as (DocumentMetadata & { content_text: string | null }) | undefined;
   if (!row) throw new DocumentPackageError("Документ не найден");
+  if (row.status === "UNAVAILABLE") {
+    throw new DocumentPackageError("Документ прежней версии недоступен после безопасного обновления данных");
+  }
   if (!row.document_version || !row.content_hash || !row.content_text) {
     throw new DocumentPackageError("Документ не содержит серверный snapshot; требуется сформировать пакет заново");
   }
@@ -140,7 +145,7 @@ export function markDocumentOpened(documentId: number, clientId: number): Docume
 }
 
 function assertCompletePackage(applicationId: number, clientId: number, requireAcknowledgement: boolean): DocumentMetadata[] {
-  const documents = listDocumentMetadata(applicationId);
+  const documents = listDocumentMetadata(applicationId).filter((document) => document.status !== "UNAVAILABLE");
   const kinds = new Set(documents.map((document) => document.kind));
   if (documents.length !== REQUIRED_DOCUMENT_KINDS.length
     || REQUIRED_DOCUMENT_KINDS.some((kind) => !kinds.has(kind))) {
@@ -171,7 +176,7 @@ const acknowledgeTransaction = db.transaction((applicationId: number, clientId: 
   db.prepare(`
     UPDATE documents
     SET acknowledged_at = COALESCE(acknowledged_at, ?), acknowledged_by = COALESCE(acknowledged_by, ?)
-    WHERE application_id = ?
+    WHERE application_id = ? AND status = 'GENERATED'
   `).run(timestamp, clientId, applicationId);
   db.prepare(`
     INSERT INTO application_events (application_id, from_status, to_status, actor, comment, created_at)
@@ -197,7 +202,7 @@ export function signAcknowledgedDocumentPackage(applicationId: number, clientId:
 }
 
 export function assertSignedDocumentPackage(applicationId: number): DocumentMetadata[] {
-  const documents = listDocumentMetadata(applicationId);
+  const documents = listDocumentMetadata(applicationId).filter((document) => document.status !== "UNAVAILABLE");
   const kinds = new Set(documents.map((document) => document.kind));
   if (documents.length !== REQUIRED_DOCUMENT_KINDS.length
     || REQUIRED_DOCUMENT_KINDS.some((kind) => !kinds.has(kind))) {

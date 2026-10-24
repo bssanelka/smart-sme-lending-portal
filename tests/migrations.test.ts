@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { buildDecisionEconomics } from "../server/calculator";
+import { buildDocumentPackage, documentContentHash } from "../server/document-templates";
 import { LATEST_SCHEMA_VERSION, SCHEMA_MIGRATIONS, runMigrations, type SchemaMigration } from "../server/migrations";
 
 function memoryDatabase() {
@@ -13,7 +14,7 @@ describe("versioned schema migrations", () => {
   it("creates the latest schema on a fresh database and is repeatable", () => {
     const database = memoryDatabase();
     try {
-      expect(LATEST_SCHEMA_VERSION).toBe(11);
+      expect(LATEST_SCHEMA_VERSION).toBe(12);
       expect(runMigrations(database)).toBe(SCHEMA_MIGRATIONS.length);
       expect(database.pragma("user_version", { simple: true })).toBe(LATEST_SCHEMA_VERSION);
       expect(database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({ count: SCHEMA_MIGRATIONS.length });
@@ -112,7 +113,7 @@ describe("versioned schema migrations", () => {
           '2026-10-20T00:00:00.000Z', '2026-10-20T00:00:00.000Z', '2026-10-20T00:00:00.000Z')
       `).run(userId, companyId, productId, calculationId, JSON.stringify(originalDecision));
 
-      expect(runMigrations(database)).toBe(6);
+      expect(runMigrations(database)).toBe(7);
       const application = database.prepare("SELECT status, decision, updated_at FROM applications WHERE public_no = 'LEGACY-OFFER-1'").get() as {
         status: string; decision: string; updated_at: string;
       };
@@ -123,7 +124,9 @@ describe("versioned schema migrations", () => {
       expect(application.status).toBe("OFFER");
       expect(application.updated_at).toBe("2026-10-20T00:00:00.000Z");
       expect(decision).toMatchObject({
-        reason: originalDecision.reason,
+        reason: "Банк одобрил заявку на предложенных условиях после проверки предоставленных данных.",
+        clientComment: "Банк одобрил заявку на предложенных условиях после проверки предоставленных данных.",
+        internalReason: originalDecision.reason,
         customLegacyField: "keep-me",
         monthlyPayment: 8_884.88,
         overpayment: 6_618.56,
@@ -165,7 +168,7 @@ describe("versioned schema migrations", () => {
         VALUES (?, 'rule-based-v1', 70, 'B', '[]', '{}', '2026-10-19T00:00:00.000Z')
       `).run(applicationId).lastInsertRowid);
 
-      expect(runMigrations(database)).toBe(5);
+      expect(runMigrations(database)).toBe(6);
       expect(database.prepare("SELECT status, decision, decided_by, decided_at, updated_at FROM applications WHERE id = ?").get(applicationId)).toEqual({
         status: "MORE_INFO",
         decision: null,
@@ -354,7 +357,7 @@ describe("versioned schema migrations", () => {
       const eventsBefore = database.prepare("SELECT * FROM application_events WHERE application_id = ? ORDER BY id").all(applicationId);
       const documentsBefore = database.prepare("SELECT * FROM documents WHERE application_id = ? ORDER BY id").all(applicationId);
 
-      expect(runMigrations(database)).toBe(1);
+      expect(runMigrations(database, SCHEMA_MIGRATIONS.slice(0, 11))).toBe(1);
       expect(database.pragma("user_version", { simple: true })).toBe(11);
       expect(database.prepare("SELECT * FROM applications WHERE id = ?").get(applicationId)).toEqual(applicationBefore);
       expect(database.prepare("SELECT * FROM application_events WHERE application_id = ? ORDER BY id").all(applicationId)).toEqual(eventsBefore);
@@ -367,6 +370,118 @@ describe("versioned schema migrations", () => {
       insertRecord.run(clientId, createdAt);
       expect(() => insertRecord.run(clientId, createdAt)).toThrow();
       expect(() => insertRecord.run(999999, createdAt)).toThrow();
+      expect(database.pragma("foreign_key_check")).toEqual([]);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("separates legacy decision text without rewriting audit history or signed snapshots", () => {
+    const database = memoryDatabase();
+    try {
+      runMigrations(database, SCHEMA_MIGRATIONS.slice(0, 11));
+      const companyId = Number(database.prepare(`
+        INSERT INTO companies (name, form, inn, ogrn, okved_code, okved_name, reg_date, address, head_name, segment)
+        VALUES ('Migration 12', 'ООО', '7700000033', '1000000000033', '62.01', 'ПО', '2010-01-01', 'Москва', 'Тест Тестов', 'micro')
+      `).run().lastInsertRowid);
+      const clientId = Number(database.prepare("INSERT INTO users (login, password, name, role, company_id) VALUES ('migration-12-client', 'test', 'Client', 'CLIENT', ?)")
+        .run(companyId).lastInsertRowid);
+      const productId = Number(database.prepare(`
+        INSERT INTO products (code, name, tagline, description, min_amount, max_amount, rate_from, term_min, term_max)
+        VALUES ('migration-12', 'Migration product', 'Test', 'Test', 1, 1000000, 20, 1, 24)
+      `).run().lastInsertRowid);
+      const decidedAt = "2026-10-23T00:00:00.000Z";
+      const internalReason = "Внутренняя scoring-рекомендация только для аналитика";
+      const economics = {
+        amount: 100_000,
+        rate: 20,
+        termMonths: 12,
+        ...buildDecisionEconomics(100_000, 20, 12, decidedAt),
+      };
+      const legacyDecision = {
+        type: "CONDITIONS",
+        productId,
+        productName: "Migration product",
+        reason: internalReason,
+        decidedAt,
+        ...economics,
+      };
+      const applicationId = Number(database.prepare(`
+        INSERT INTO applications (
+          public_no, client_id, company_id, product_id, amount, term_months, purpose, purpose_category,
+          status, decision, decided_at, signed_at, signed_by, created_at, updated_at
+        ) VALUES ('MIGRATION-12-1', ?, ?, ?, 100000, 12, 'Закупка', 'оборотные средства',
+          'READY_FOR_ISSUANCE', ?, ?, ?, ?, ?, ?)
+      `).run(clientId, companyId, productId, JSON.stringify(legacyDecision), decidedAt, decidedAt, clientId, decidedAt, decidedAt).lastInsertRowid);
+      database.prepare(`
+        INSERT INTO application_events (application_id, from_status, to_status, actor, comment, created_at)
+        VALUES (?, 'DECISION', 'OFFER', 'Bank', ?, ?)
+      `).run(applicationId, internalReason, decidedAt);
+      const legacyDocuments = buildDocumentPackage({
+        publicNo: "MIGRATION-12-1",
+        companyName: "Migration 12",
+        companyInn: "7700000033",
+        companyHeadName: "Тест Тестов",
+        productName: "Migration product",
+        purpose: "Закупка",
+        decisionReason: internalReason,
+        decidedAt,
+        generatedAt: decidedAt,
+        economics,
+      });
+      const insertDocument = database.prepare(`
+        INSERT INTO documents (
+          application_id, kind, filename, status, document_version, content_hash, content_text,
+          opened_at, opened_by, acknowledged_at, acknowledged_by, signed_at, signed_by, created_at
+        ) VALUES (?, ?, ?, 'SIGNED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const document of legacyDocuments) {
+        insertDocument.run(
+          applicationId, document.kind, document.filename, document.version, document.contentHash, document.content,
+          decidedAt, clientId, decidedAt, clientId, decidedAt, clientId, decidedAt,
+        );
+      }
+
+      expect(runMigrations(database)).toBe(1);
+      expect(database.pragma("user_version", { simple: true })).toBe(12);
+      const stored = database.prepare("SELECT status, decision, signed_at, signed_by FROM applications WHERE id = ?").get(applicationId) as {
+        status: string; decision: string; signed_at: string | null; signed_by: number | null;
+      };
+      expect(stored).toMatchObject({ status: "SIGNING", signed_at: null, signed_by: null });
+      expect(JSON.parse(stored.decision)).toMatchObject({
+        reason: "Банк предлагает скорректированные условия после проверки предоставленных данных.",
+        clientComment: "Банк предлагает скорректированные условия после проверки предоставленных данных.",
+        internalReason,
+      });
+      expect(database.prepare("SELECT comment FROM application_events WHERE application_id = ? AND to_status = 'OFFER'").get(applicationId))
+        .toEqual({ comment: internalReason });
+      expect(database.prepare("SELECT from_status, to_status, actor, comment FROM application_events WHERE application_id = ? ORDER BY id DESC LIMIT 1").get(applicationId))
+        .toEqual({
+          from_status: "READY_FOR_ISSUANCE",
+          to_status: "SIGNING",
+          actor: "Система",
+          comment: "Прежний пакет документов перемещён в недоступный архив. Сформирован безопасный пакет для повторного ознакомления и подписания.",
+        });
+      const documents = database.prepare(`
+        SELECT status, document_version, content_hash, content_text, opened_by, acknowledged_by, signed_by
+        FROM documents WHERE application_id = ? ORDER BY id
+      `).all(applicationId) as Array<Record<string, unknown>>;
+      expect(documents).toHaveLength(6);
+      expect(documents.slice(0, 3).every((document, index) => document.status === "UNAVAILABLE"
+        && document.document_version === "legacy-unavailable-v2"
+        && document.content_hash === legacyDocuments[index]?.contentHash
+        && document.content_text === null
+        && document.opened_by === clientId
+        && document.acknowledged_by === clientId
+        && document.signed_by === clientId)).toBe(true);
+      expect(documents.slice(3).every((document) => document.status === "GENERATED"
+        && document.document_version === "credit-docs-v2"
+        && typeof document.content_text === "string"
+        && !(document.content_text as string).includes(internalReason)
+        && documentContentHash(document.content_text as string) === document.content_hash
+        && document.opened_by === null
+        && document.acknowledged_by === null
+        && document.signed_by === null)).toBe(true);
       expect(database.pragma("foreign_key_check")).toEqual([]);
     } finally {
       database.close();

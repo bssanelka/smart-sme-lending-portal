@@ -28,6 +28,8 @@ import {
   productFromRecord,
 } from "./product-eligibility";
 import { getClientProfile } from "./profile";
+import { previewBenefits } from "./benefits";
+import { defaultClientDecisionComment, type FinalDecisionType } from "./decision-text";
 import { IdempotencyConflictError, runIdempotentCommand } from "./idempotency";
 import { FixedWindowRateLimiter, hashPassword, isPasswordHash, verifyStoredPassword } from "./security";
 import { getActiveMoreInfoRequest, getMoreInfoRequests, MORE_INFO_REQUEST_TYPES } from "./more-info";
@@ -314,6 +316,26 @@ const ClientProfileSchema = z.object({
   }),
   benefits_disclaimer: z.string(),
 }).openapi("ClientProfile");
+const BenefitPreviewRequestSchema = z.object({
+  region: z.string().trim().min(1).max(200),
+  sme_status: z.enum(["micro", "small", "medium", "not_sme", "unknown"]),
+  purpose: z.enum(["working_capital", "investment", "guarantee", "digitalization", "consulting", "other"]),
+  amount: z.number().positive().max(1_000_000_000_000_000).optional(),
+  term_months: z.number().int().positive().max(1200).optional(),
+  industry: z.string().trim().min(1).max(300).optional(),
+}).strict().openapi("BenefitPreviewRequest");
+const BenefitPreviewResponseSchema = z.object({
+  items: z.array(z.object({
+    item: BenefitSuggestionSchema,
+    reasons: z.array(z.string()),
+    unknowns: z.array(z.string()),
+  })),
+  metadata: z.object({
+    eligibilityChecked: z.literal(false),
+    externalDataUsed: z.literal(false),
+    answersPersisted: z.literal(false),
+  }),
+}).openapi("BenefitPreviewResponse");
 
 app.openapi(createRoute({
   method: "get", path: "/api/client/profile", operationId: "getClientProfile", tags: ["Client"],
@@ -330,6 +352,29 @@ app.openapi(createRoute({
     company_id: u.company_id,
     position: u.position as string | null,
   })));
+});
+
+app.openapi(createRoute({
+  method: "post", path: "/api/client/profile/benefits/preview", operationId: "previewClientBenefits", tags: ["Client"],
+  summary: "Одноразово упорядочить отобранные направления поддержки",
+  request: jsonBody(BenefitPreviewRequestSchema),
+  responses: standardResponses("Предварительное упорядочивание направлений", BenefitPreviewResponseSchema),
+}), (c) => {
+  const u = requireUser(c); if (!u) return c.json(err("Не авторизован"), 401);
+  if (u.role !== "CLIENT" || typeof u.company_id !== "number") return c.json(err("Только для клиентов"), 403);
+  const profile = getClientProfile({
+    id: u.id,
+    login: u.login,
+    name: u.name,
+    role: u.role,
+    company_id: u.company_id,
+    position: u.position,
+  });
+  const result = previewBenefits(profile.benefits, c.req.valid("json"), {
+    okvedCode: profile.company.okved_code,
+    okvedName: profile.company.okved_name,
+  });
+  return c.json(ok(result));
 });
 
 // --- meta ---
@@ -594,12 +639,14 @@ const FinalRiskAssessmentSchema = z.object({
   calculatedAt: z.string(),
 });
 
-const StoredDecisionSchema = z.object({
+const PersistedStoredDecisionSchema = z.object({
   type: z.enum(["APPROVE", "CONDITIONS", "MORE_INFO", "REJECT"]),
   rate: z.number().nullable(),
   amount: z.number().nullable(),
   termMonths: z.number().int().nullable(),
   reason: z.string(),
+  clientComment: z.string().optional(),
+  internalReason: z.string().optional(),
   decidedAt: z.string(),
   productId: z.number().int().optional(),
   productName: z.string().optional(),
@@ -612,7 +659,8 @@ const StoredDecisionSchema = z.object({
   preliminaryTerms: PreliminaryTermsSchema.optional(),
   finalRiskAssessment: FinalRiskAssessmentSchema.optional(),
 });
-const ClientStoredDecisionSchema = StoredDecisionSchema.omit({ finalRiskAssessment: true });
+const StoredDecisionSchema = PersistedStoredDecisionSchema.extend({ clientComment: z.string() });
+const ClientStoredDecisionSchema = StoredDecisionSchema.omit({ internalReason: true, finalRiskAssessment: true });
 
 const ScoreFactorSchema = z.object({
   key: z.string(), label: z.string(), value: z.string(), points: z.number(), explanation: z.string(),
@@ -747,8 +795,16 @@ function storedDecision(raw: unknown): StoredDecision | null {
   if (typeof raw !== "string" || raw.length === 0) return null;
   try {
     const parsed: unknown = JSON.parse(raw);
-    const result = StoredDecisionSchema.safeParse(parsed);
-    return result.success ? result.data : null;
+    const result = PersistedStoredDecisionSchema.safeParse(parsed);
+    if (!result.success) return null;
+    const hasClientComment = typeof result.data.clientComment === "string" && result.data.clientComment.trim().length > 0;
+    const decisionType = result.data.type as FinalDecisionType | "MORE_INFO";
+    const clientComment = hasClientComment || decisionType === "MORE_INFO"
+      ? result.data.clientComment ?? result.data.reason
+      : defaultClientDecisionComment(decisionType);
+    const internalReason = result.data.internalReason
+      ?? (!hasClientComment && decisionType !== "MORE_INFO" ? result.data.reason : undefined);
+    return { ...result.data, reason: clientComment, clientComment, ...(internalReason ? { internalReason } : {}) };
   } catch {
     return null;
   }
@@ -780,7 +836,12 @@ function clientApplicationView(a: Row) {
   delete publicApplication.score_details;
   delete publicApplication.scorecard_version;
   delete publicApplication.decided_by;
-  const publicDecision = enriched.decision ? { ...enriched.decision, finalRiskAssessment: undefined } : null;
+  const publicDecision = enriched.decision ? { ...enriched.decision } : null;
+  if (publicDecision) {
+    delete publicDecision.internalReason;
+    delete publicDecision.finalRiskAssessment;
+    publicDecision.reason = publicDecision.clientComment;
+  }
   const preapproval = a.status === "DECISION"
     ? (a.grade === "A" || a.grade === "B"
         ? {
@@ -803,10 +864,19 @@ function clientScoreDetails(raw: unknown) {
   return factors.filter((factor) => CLIENT_SCORE_FACTOR_KEYS.has(factor.key)).map(({ key, label, value, explanation }) => ({ key, label, value, explanation }));
 }
 
-function clientEvents(events: Row[]) {
-  return events.map((event) => event.to_status === "DECISION"
-    ? { ...event, comment: "Оценка завершена, заявка передана на принятие кредитного решения" }
-    : event);
+function clientEvents(events: Row[], clientComment?: string) {
+  return events.map((event) => {
+    if (event.to_status === "DECISION") {
+      return { ...event, comment: "Оценка завершена, заявка передана на принятие кредитного решения" };
+    }
+    if (event.to_status === "OFFER") {
+      return { ...event, comment: clientComment ?? defaultClientDecisionComment("APPROVE") };
+    }
+    if (event.to_status === "REJECTED") {
+      return { ...event, comment: clientComment ?? defaultClientDecisionComment("REJECT") };
+    }
+    return event;
+  });
 }
 
 
@@ -902,7 +972,7 @@ app.openapi(createRoute({
   const applicationView = isBank ? appWithProduct(a) : clientApplicationView(a);
   return c.json(ok({
     ...applicationView,
-    events: isBank ? events : clientEvents(events),
+    events: isBank ? events : clientEvents(events, applicationView.decision?.clientComment),
     documents: docs,
     chat: msgs,
     decision: applicationView.decision,
@@ -1283,14 +1353,20 @@ app.openapi(createRoute({
   }));
 });
 
-const DecisionRequestSchema = z.discriminatedUnion("type", [
+const DecisionTextSchema = z.string().trim().min(3).max(2000);
+const LegacyDecisionReasonSchema = DecisionTextSchema.openapi({
+  description: "Устаревшее единое обоснование. Считается клиентским текстом; используйте internal_reason и client_comment.",
+  deprecated: true,
+});
+const DecisionRequestSchema = z.union([
   z.object({
     type: z.literal("APPROVE"),
     product_id: z.number().int().positive().optional(),
     rate: z.number().positive(),
     amount: z.number().positive(),
     term_months: z.number().int().positive(),
-    reason: z.string().trim().min(3),
+    internal_reason: DecisionTextSchema,
+    client_comment: DecisionTextSchema,
   }),
   z.object({
     type: z.literal("CONDITIONS"),
@@ -1298,11 +1374,12 @@ const DecisionRequestSchema = z.discriminatedUnion("type", [
     rate: z.number().positive(),
     amount: z.number().positive(),
     term_months: z.number().int().positive(),
-    reason: z.string().trim().min(3),
+    internal_reason: DecisionTextSchema,
+    client_comment: DecisionTextSchema,
   }),
   z.object({
     type: z.literal("MORE_INFO"),
-    reason: z.string().trim().min(3),
+    reason: DecisionTextSchema,
     request_type: z.enum(MORE_INFO_REQUEST_TYPES),
     required_fields: z.array(z.string().trim().min(1).max(100)).max(20).default([]),
     required_files: z.array(z.string().trim().min(1).max(255)).max(20).default([]),
@@ -1313,7 +1390,31 @@ const DecisionRequestSchema = z.discriminatedUnion("type", [
     rate: z.number().positive().optional(),
     amount: z.number().positive().optional(),
     term_months: z.number().int().positive().optional(),
-    reason: z.string().trim().min(3),
+    internal_reason: DecisionTextSchema,
+    client_comment: DecisionTextSchema,
+  }),
+  z.object({
+    type: z.literal("APPROVE"),
+    product_id: z.number().int().positive().optional(),
+    rate: z.number().positive(),
+    amount: z.number().positive(),
+    term_months: z.number().int().positive(),
+    reason: LegacyDecisionReasonSchema,
+  }),
+  z.object({
+    type: z.literal("CONDITIONS"),
+    product_id: z.number().int().positive().optional(),
+    rate: z.number().positive(),
+    amount: z.number().positive(),
+    term_months: z.number().int().positive(),
+    reason: LegacyDecisionReasonSchema,
+  }),
+  z.object({
+    type: z.literal("REJECT"),
+    rate: z.number().positive().optional(),
+    amount: z.number().positive().optional(),
+    term_months: z.number().int().positive().optional(),
+    reason: LegacyDecisionReasonSchema,
   }),
 ]);
 
@@ -1372,21 +1473,38 @@ app.openapi(createRoute({
       if (d.type === "MORE_INFO" && d.request_type === "COMPANY_DATA" && requiredFields.length === 0) {
         throw new CommandValidationError("Укажите обязательные поля компании", 400);
       }
-      applyDecision(applicationId, {
-        type: d.type,
-        rate: "rate" in d ? d.rate ?? null : null,
-        amount: "amount" in d ? d.amount ?? null : null,
-        termMonths: "term_months" in d ? d.term_months ?? null : null,
-        reason: d.reason,
-        productId: selectedProduct?.id as number | undefined,
-        productName: selectedProduct?.name as string | undefined,
-      }, u.name, u.id, d.type === "MORE_INFO" ? {
-        type: d.request_type,
-        reason: d.reason,
-        requiredFields,
-        requiredFiles: d.required_files,
-        dueAt,
-      } : undefined);
+      if (d.type === "MORE_INFO") {
+        applyDecision(applicationId, {
+          type: "MORE_INFO",
+          rate: null,
+          amount: null,
+          termMonths: null,
+          reason: d.reason,
+        }, u.name, u.id, {
+          type: d.request_type,
+          reason: d.reason,
+          requiredFields,
+          requiredFiles: d.required_files,
+          dueAt,
+        });
+      } else {
+        const legacyRequest = "reason" in d;
+        const clientComment = legacyRequest ? d.reason : d.client_comment;
+        const internalReason = legacyRequest
+          ? "Внутреннее обоснование не передано отдельно: решение получено через устаревший API-контракт."
+          : d.internal_reason;
+        applyDecision(applicationId, {
+          type: d.type,
+          rate: "rate" in d ? d.rate ?? null : null,
+          amount: "amount" in d ? d.amount ?? null : null,
+          termMonths: "term_months" in d ? d.term_months ?? null : null,
+          reason: clientComment,
+          internalReason,
+          clientComment,
+          productId: selectedProduct?.id as number | undefined,
+          productName: selectedProduct?.name as string | undefined,
+        }, u.name, u.id);
+      }
       return appWithProduct(getApplication(applicationId) as Row);
     },
   });
@@ -1572,7 +1690,7 @@ app.doc31("/openapi.json", {
   openapi: "3.1.0",
   info: {
     title: "Умный кредитный кабинет — API",
-    version: "1.0.2",
+    version: "1.0.3",
     description: "Демонстрационный кредитный конвейер для МСБ. Использует синтетические данные, локальные моки внешних систем и автоматические ответы по фиксированным правилам — без ИИ и без участия сотрудника банка.",
   },
   security: [{ cookieAuth: [] }],

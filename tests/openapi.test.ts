@@ -32,6 +32,7 @@ type OpenApiSchema = {
   pattern?: string;
   anyOf?: OpenApiSchema[];
   oneOf?: OpenApiSchema[];
+  additionalProperties?: boolean;
 };
 
 type OpenApiParameter = {
@@ -51,6 +52,9 @@ type OpenApiHeader = {
 type OpenApiOperation = {
   operationId?: string;
   parameters?: OpenApiParameter[];
+  requestBody?: {
+    content?: Record<string, { schema?: OpenApiSchema }>;
+  };
   responses?: Record<string, {
     content?: Record<string, { schema?: OpenApiSchema }>;
     headers?: Record<string, OpenApiHeader>;
@@ -140,7 +144,7 @@ describe("OpenAPI contract", () => {
         .filter(([method]) => ["get", "post", "put", "patch", "delete"].includes(method))
         .map(([, operation]) => operation),
     );
-    expect(operations).toHaveLength(32);
+    expect(operations).toHaveLength(33);
 
     const operationIds = operations.map((operation) => operation.operationId);
     expect(operationIds.every(Boolean)).toBe(true);
@@ -155,6 +159,47 @@ describe("OpenAPI contract", () => {
         }
       }
     }
+  });
+
+  it("documents separated bank decision texts without exposing internal rationale in the client contract", async () => {
+    const response = await app.request("/openapi.json");
+    expect(response.status).toBe(200);
+    const document = await response.json() as OpenApiDocument;
+    const operation = document.paths["/api/bank/applications/{id}/decision"]?.post;
+    const requestSchema = operation?.requestBody?.content?.["application/json"]?.schema;
+    expect(requestSchema).toBeDefined();
+    const variants = requestSchema?.oneOf ?? requestSchema?.anyOf ?? [];
+    expect(variants).toHaveLength(7);
+    const variantsPerType = new Map<string, number>();
+
+    for (const unresolvedVariant of variants) {
+      const variant = resolveSchema(document, unresolvedVariant);
+      const decisionType = variant.properties?.type?.enum?.[0];
+      expect(decisionType).toBeDefined();
+      variantsPerType.set(decisionType!, (variantsPerType.get(decisionType!) ?? 0) + 1);
+      if (decisionType === "MORE_INFO") {
+        expect(variant.required).toContain("reason");
+        expect(variant.properties).not.toHaveProperty("internal_reason");
+        expect(variant.properties).not.toHaveProperty("client_comment");
+      } else if (variant.properties?.reason) {
+        expect(["APPROVE", "CONDITIONS", "REJECT"]).toContain(decisionType);
+        expect(variant.required).toContain("reason");
+        expect(variant.properties).not.toHaveProperty("internal_reason");
+        expect(variant.properties).not.toHaveProperty("client_comment");
+      } else {
+        expect(["APPROVE", "CONDITIONS", "REJECT"]).toContain(decisionType);
+        expect(variant.required).toEqual(expect.arrayContaining(["internal_reason", "client_comment"]));
+        expect(variant.properties).not.toHaveProperty("reason");
+      }
+    }
+    expect(Object.fromEntries(variantsPerType)).toEqual({ APPROVE: 2, CONDITIONS: 2, MORE_INFO: 1, REJECT: 2 });
+
+    const bankContract = JSON.stringify(document.components?.schemas?.BankApplication);
+    const clientContract = JSON.stringify(document.components?.schemas?.ClientApplication);
+    expect(bankContract).toContain("internalReason");
+    expect(bankContract).toContain("clientComment");
+    expect(clientContract).toContain("clientComment");
+    expect(clientContract).not.toContain("internalReason");
   });
 
   it("documents idempotency headers for exactly the idempotent operations", async () => {
@@ -216,6 +261,7 @@ describe("OpenAPI contract", () => {
       ["/api/auth/logout", "post"],
       ["/api/auth/me", "get"],
       ["/api/client/profile", "get"],
+      ["/api/client/profile/benefits/preview", "post"],
       ["/api/health", "get"],
       ["/api/products", "get"],
       ["/api/products/{id}", "get"],
@@ -272,6 +318,26 @@ describe("OpenAPI contract", () => {
     expectRequiredObject(profileBenefits, ["id", "title", "status", "verificationStatus", "applicability", "source", "requirements"]);
     expect(profileBenefits.properties?.requirements?.type).toBe("array");
     expect(profileBenefits.properties?.requirements?.items?.type).toBe("string");
+
+    const previewOperation = document.paths["/api/client/profile/benefits/preview"]?.post;
+    const previewRequestSchema = previewOperation?.requestBody?.content?.["application/json"]?.schema;
+    expect(previewRequestSchema).toBeDefined();
+    const previewRequest = resolveSchema(document, previewRequestSchema!);
+    expectRequiredObject(previewRequest, ["region", "sme_status", "purpose"]);
+    expect(previewRequest.additionalProperties).toBe(false);
+    expect(previewRequest.properties?.sme_status?.enum).toEqual(["micro", "small", "medium", "not_sme", "unknown"]);
+    expect(previewRequest.properties?.purpose?.enum).toEqual(["working_capital", "investment", "guarantee", "digitalization", "consulting", "other"]);
+
+    const preview = successDataSchema(document, "/api/client/profile/benefits/preview", "post");
+    expectRequiredObject(preview, ["items", "metadata"]);
+    const previewItem = expectArrayItems(document, preview.properties!.items!);
+    expectRequiredObject(previewItem, ["item", "reasons", "unknowns"]);
+    expect(previewItem.properties).not.toHaveProperty("score");
+    const previewMetadata = resolveSchema(document, preview.properties!.metadata!);
+    expectRequiredObject(previewMetadata, ["eligibilityChecked", "externalDataUsed", "answersPersisted"]);
+    expect(previewMetadata.properties?.eligibilityChecked?.enum).toEqual([false]);
+    expect(previewMetadata.properties?.externalDataUsed?.enum).toEqual([false]);
+    expect(previewMetadata.properties?.answersPersisted?.enum).toEqual([false]);
 
     const newsItems = expectArrayItems(document, successDataSchema(document, "/api/news", "get"));
     expectRequiredObject(newsItems, ["id", "title", "body", "tags", "published_at", "personalized", "matched_tag", "rank"]);

@@ -3,6 +3,7 @@ import { applyDecision, buildScoringInput, getApplication, runConveyor, clientAc
 import { proposeDecision } from "./scoring";
 import { hashPassword } from "./security";
 import { acknowledgeDocumentPackage, listDocumentMetadata, markDocumentOpened } from "./documents";
+import { defaultClientDecisionComment } from "./decision-text";
 
 type Row = Record<string, unknown>;
 
@@ -180,8 +181,15 @@ function seedDemoApplications() {
   const decideByBank = (applicationId: number, product: Row) => {
     const application = getApplication(applicationId) as Row;
     const proposal = proposeDecision(buildScoringInput(application), product.rate_from as number, application.amount as number, application.term_months as number);
+    const decisionType = proposal.type;
+    if (decisionType === "MORE_INFO") throw new Error("Демо-решение нельзя сформировать без обязательных данных");
+    const clientComment = defaultClientDecisionComment(decisionType);
     applyDecision(applicationId, {
       ...proposal,
+      type: decisionType,
+      reason: clientComment,
+      internalReason: proposal.reason,
+      clientComment,
       productId: product.id as number,
       productName: product.name as string,
     }, bank.name as string, bank.id as number);

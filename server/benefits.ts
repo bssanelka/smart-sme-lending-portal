@@ -47,9 +47,110 @@ export interface BenefitSuggestion {
   requirements: string[];
 }
 
+export type BenefitPreviewSmeStatus = "micro" | "small" | "medium" | "not_sme" | "unknown";
+export type BenefitPreviewPurpose = "working_capital" | "investment" | "guarantee" | "digitalization" | "consulting" | "other";
+
+export interface BenefitPreviewAnswers {
+  region: string;
+  sme_status: BenefitPreviewSmeStatus;
+  purpose: BenefitPreviewPurpose;
+  amount?: number;
+  term_months?: number;
+  industry?: string;
+}
+
+export interface BenefitPreviewProfile {
+  okvedCode: string;
+  okvedName: string;
+}
+
+export interface BenefitPreviewItem {
+  item: BenefitSuggestion;
+  reasons: string[];
+  unknowns: string[];
+}
+
+export interface BenefitPreviewResult {
+  items: BenefitPreviewItem[];
+  metadata: {
+    eligibilityChecked: false;
+    externalDataUsed: false;
+    answersPersisted: false;
+  };
+}
+
 const isSme = (segment: string) => segment === "micro" || segment === "small" || segment === "medium";
 const segmentName = (segment: string) => segment === "micro" ? "микробизнес" : segment === "small" ? "малый бизнес" : "средний бизнес";
 const UNKNOWN_REGION = "Регион регистрации компании не передан в демо-подбор — требуется уточнить";
+
+const PURPOSE_LABELS: Record<BenefitPreviewPurpose, string> = {
+  working_capital: "Оборотные средства",
+  investment: "Оборудование или развитие",
+  guarantee: "Гарантия или поручительство",
+  digitalization: "Цифровизация",
+  consulting: "Консультации или обучение",
+  other: "Другая цель",
+};
+
+interface BenefitPreviewRule {
+  compatiblePurposes: Exclude<BenefitPreviewPurpose, "other">[];
+  smeOnly: boolean;
+  industryOkvedPrefixes: string[] | null;
+  regionalConstraints: null;
+  amountLimits: null;
+  termMonthsLimits: null;
+}
+
+const BENEFIT_PREVIEW_RULES: Record<string, BenefitPreviewRule> = {
+  "sme-preferential-financing": {
+    compatiblePurposes: ["working_capital", "investment"],
+    smeOnly: true,
+    industryOkvedPrefixes: null,
+    regionalConstraints: null,
+    amountLimits: null,
+    termMonthsLimits: null,
+  },
+  "regional-guarantee": {
+    compatiblePurposes: ["guarantee"],
+    smeOnly: true,
+    industryOkvedPrefixes: null,
+    regionalConstraints: null,
+    amountLimits: null,
+    termMonthsLimits: null,
+  },
+  "food-service-modernization": {
+    compatiblePurposes: ["investment", "digitalization"],
+    smeOnly: false,
+    industryOkvedPrefixes: ["56."],
+    regionalConstraints: null,
+    amountLimits: null,
+    termMonthsLimits: null,
+  },
+  "construction-contract-support": {
+    compatiblePurposes: ["working_capital", "guarantee"],
+    smeOnly: false,
+    industryOkvedPrefixes: ["41."],
+    regionalConstraints: null,
+    amountLimits: null,
+    termMonthsLimits: null,
+  },
+  "trade-digitalization-support": {
+    compatiblePurposes: ["digitalization"],
+    smeOnly: false,
+    industryOkvedPrefixes: ["46."],
+    regionalConstraints: null,
+    amountLimits: null,
+    termMonthsLimits: null,
+  },
+  "young-business-support": {
+    compatiblePurposes: ["consulting"],
+    smeOnly: false,
+    industryOkvedPrefixes: null,
+    regionalConstraints: null,
+    amountLimits: null,
+    termMonthsLimits: null,
+  },
+};
 
 function demoSource(entry: string): BenefitSuggestion["source"] {
   return {
@@ -279,4 +380,94 @@ export function selectBenefits(context: BenefitContext): BenefitSuggestion[] {
     whyMatches: suggestion.observedCriteria,
     requirements: [...suggestion.unknownCriteria, ...suggestion.requiredEvidence],
   }));
+}
+
+function industryAnswerMatchesProfile(industry: string, profile: BenefitPreviewProfile): boolean {
+  const normalizedIndustry = industry.trim().toLocaleLowerCase("ru-RU");
+  const okvedCode = profile.okvedCode.trim().toLocaleLowerCase("ru-RU");
+  const okvedName = profile.okvedName.trim().toLocaleLowerCase("ru-RU");
+  return normalizedIndustry === okvedCode
+    || normalizedIndustry === okvedName
+    || normalizedIndustry === `${okvedCode} · ${okvedName}`;
+}
+
+export function previewBenefits(
+  selectedBenefits: BenefitSuggestion[],
+  answers: BenefitPreviewAnswers,
+  profile: BenefitPreviewProfile,
+): BenefitPreviewResult {
+  const evaluated = selectedBenefits.flatMap((item, originalIndex) => {
+    const rule = BENEFIT_PREVIEW_RULES[item.id];
+    if (!rule) {
+      return [{
+        item,
+        reasons: ["Направление ранее отобрано сервером по каноническим данным профиля."],
+        unknowns: ["Для направления нет структурированных правил совместимости с ответами опроса."],
+        purposeRank: Number.MAX_SAFE_INTEGER,
+        originalIndex,
+      }];
+    }
+
+    if (answers.sme_status === "not_sme" && rule.smeOnly) return [];
+
+    const purposeRank = answers.purpose === "other"
+      ? 0
+      : rule.compatiblePurposes.indexOf(answers.purpose);
+    if (answers.purpose !== "other" && purposeRank < 0) return [];
+
+    const reasons = ["Направление ранее отобрано сервером по каноническим данным профиля."];
+    const unknowns: string[] = [];
+
+    if (answers.purpose === "other") {
+      unknowns.push("Для цели «Другая цель» в демо-каталоге нет структурированного правила совместимости; направление оставлено для ручной проверки.");
+    } else {
+      reasons.push(`Цель «${PURPOSE_LABELS[answers.purpose]}» явно указана как совместимая с этим направлением в конфигурации каталога.`);
+    }
+
+    if (rule.smeOnly) {
+      if (answers.sme_status === "unknown") {
+        unknowns.push("Статус МСП нужно подтвердить по актуальному реестру.");
+      } else {
+        reasons.push("Указан статус субъекта МСП, совместимый с SME-only направлением.");
+      }
+    }
+
+    if (rule.regionalConstraints === null) {
+      unknowns.push(`Доступность в регионе «${answers.region}» не проверена: в демо-каталоге нет подтверждённых региональных ограничений.`);
+    }
+
+    if (answers.amount !== undefined && rule.amountLimits === null) {
+      unknowns.push(`Сумма ${answers.amount.toLocaleString("ru-RU")} ₽ не проверена: в демо-каталоге нет структурированных лимитов суммы.`);
+    }
+
+    if (answers.term_months !== undefined && rule.termMonthsLimits === null) {
+      unknowns.push(`Срок ${answers.term_months} мес. не проверен: в демо-каталоге нет структурированных ограничений срока.`);
+    }
+
+    if (answers.industry !== undefined) {
+      if (rule.industryOkvedPrefixes === null) {
+        unknowns.push(`Отрасль «${answers.industry}» не проверена: у направления нет структурированных отраслевых ограничений.`);
+      } else {
+        const canonicalIndustryMatches = rule.industryOkvedPrefixes.some((prefix) => profile.okvedCode.startsWith(prefix));
+        if (canonicalIndustryMatches && industryAnswerMatchesProfile(answers.industry, profile)) {
+          reasons.push(`Отрасль в ответе совпадает с каноническим ОКВЭД ${profile.okvedCode}, по которому направление было предварительно отобрано.`);
+        } else {
+          unknowns.push(`Отрасль «${answers.industry}» не подтверждена: для отбора используется канонический ОКВЭД ${profile.okvedCode}, а не свободный текст ответа.`);
+        }
+      }
+    }
+
+    return [{ item, reasons, unknowns, purposeRank, originalIndex }];
+  });
+
+  evaluated.sort((left, right) => left.purposeRank - right.purposeRank || left.originalIndex - right.originalIndex);
+
+  return {
+    items: evaluated.map(({ item, reasons, unknowns }) => ({ item, reasons, unknowns })),
+    metadata: {
+      eligibilityChecked: false,
+      externalDataUsed: false,
+      answersPersisted: false,
+    },
+  };
 }

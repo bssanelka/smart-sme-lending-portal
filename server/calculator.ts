@@ -2,6 +2,7 @@ import { scoreApplication, type ScoringInput, type ScoreFactor } from "./scoring
 import {
   ProductEligibilityError,
   evaluateProductEligibility,
+  formatEligibilityError,
   type EligibleProduct,
 } from "./product-eligibility";
 
@@ -120,6 +121,20 @@ export interface ProductSelection {
   alternatives: ProductSelectionOption[];
 }
 
+const UI_ALTERNATIVE_LIMIT = 2;
+const rankedOptionsBySelection = new WeakMap<ProductSelection, ProductSelectionOption[]>();
+const eligibilityConflictsBySelection = new WeakMap<ProductSelection, Map<number, string>>();
+
+function rememberSelectionContext(
+  selection: ProductSelection,
+  rankedOptions: ProductSelectionOption[],
+  eligibilityConflicts: Map<number, string>,
+): ProductSelection {
+  rankedOptionsBySelection.set(selection, rankedOptions);
+  eligibilityConflictsBySelection.set(selection, eligibilityConflicts);
+  return selection;
+}
+
 export type CalculationSelectionSource = "SYSTEM_RECOMMENDED" | "CLIENT_SELECTED" | "CLIENT_ALTERNATIVE";
 
 export function chooseProductForCalculation(selection: ProductSelection, productId?: number): {
@@ -136,19 +151,26 @@ export function chooseProductForCalculation(selection: ProductSelection, product
     return { selected: selection.recommended, selection, source: "CLIENT_SELECTED", systemRecommendedProductId };
   }
 
-  const options = [selection.recommended, ...selection.alternatives];
+  const options = rankedOptionsBySelection.get(selection) ?? [selection.recommended, ...selection.alternatives];
   const selected = options.find((option) => option.product.id === productId);
   if (!selected) {
-    throw new ProductEligibilityError("Выбранный продукт недоступен среди подходящих вариантов — выполните подбор повторно");
+    const conflict = eligibilityConflictsBySelection.get(selection)?.get(productId);
+    throw new ProductEligibilityError(conflict
+      ?? `Продукт №${productId} отсутствует в текущем каталоге или недоступен для расчёта`);
   }
+
+  const eligibilityConflicts = eligibilityConflictsBySelection.get(selection) ?? new Map<number, string>();
+  const selectedSelection = rememberSelectionContext({
+    requested: selection.requested,
+    recommended: selected,
+    alternatives: options
+      .filter((option) => option.product.id !== productId)
+      .slice(0, UI_ALTERNATIVE_LIMIT),
+  }, options, eligibilityConflicts);
 
   return {
     selected,
-    selection: {
-      requested: selection.requested,
-      recommended: selected,
-      alternatives: options.filter((option) => option.product.id !== productId),
-    },
+    selection: selectedSelection,
     source: "CLIENT_ALTERNATIVE",
     systemRecommendedProductId,
   };
@@ -190,7 +212,7 @@ export function selectProductForNeed(
 ): ProductSelection {
   if (products.length === 0) throw new Error("Кредитные продукты не настроены");
 
-  const ranked = products.map((product) => {
+  const candidates = products.map((product) => {
     const amount = clamp(need.amount, product.minAmount, product.maxAmount);
     const termMonths = clamp(need.termMonths, product.termMin, product.termMax);
     const eligibility = evaluateProductEligibility(product, { ...need, amount, termMonths });
@@ -213,7 +235,8 @@ export function selectProductForNeed(
     reasons.push(`Выручка соответствует минимуму продукта ${product.minRevenue.toLocaleString("ru-RU")} ₽.`);
     reasons.push(`Базовая ставка продукта — от ${product.rateFrom}%.`);
     return { product, amount, termMonths, exactMatch, purposeMatches: eligibility.purposeMatches, changeScore, fitScore, reasons, eligibility };
-  }).filter((item) => item.eligibility.eligible).sort((left, right) => {
+  });
+  const ranked = candidates.filter((item) => item.eligibility.eligible).sort((left, right) => {
     if (left.exactMatch !== right.exactMatch) return left.exactMatch ? -1 : 1;
     if (left.exactMatch && right.exactMatch) {
       if (left.purposeMatches !== right.purposeMatches) return left.purposeMatches ? -1 : 1;
@@ -238,11 +261,16 @@ export function selectProductForNeed(
     reasons: item.reasons,
   });
 
-  return {
+  const rankedOptions = ranked.map(toOption);
+  const eligibilityConflicts = new Map(candidates
+    .filter((item) => !item.eligibility.eligible)
+    .map((item) => [item.product.id, formatEligibilityError(item.product, item.eligibility)]));
+
+  return rememberSelectionContext({
     requested: { amount: need.amount, termMonths: need.termMonths, purposeCategory: need.purposeCategory },
-    recommended: toOption(ranked[0]),
-    alternatives: ranked.slice(1, 3).map(toOption),
-  };
+    recommended: rankedOptions[0],
+    alternatives: rankedOptions.slice(1, UI_ALTERNATIVE_LIMIT + 1),
+  }, rankedOptions, eligibilityConflicts);
 }
 
 export function annuityPayment(principal: number, annualRate: number, termMonths: number): number {

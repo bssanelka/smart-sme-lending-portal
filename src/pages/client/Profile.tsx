@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Link } from "react-router";
 import {
   ArrowLeft,
@@ -20,27 +20,18 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import TermHint, { type TermKey } from "@/components/TermHint";
-import { api, fmtMoney, type BenefitSuggestion, type ClientProfile } from "@/lib/api";
+import {
+  api,
+  fmtMoney,
+  type BenefitPreviewItem,
+  type BenefitPreviewPurpose,
+  type BenefitPreviewResponse,
+  type BenefitPreviewSmeStatus,
+  type ClientProfile,
+} from "@/lib/api";
 
-type DemoBenefitSuggestion = BenefitSuggestion & {
-  applicability: {
-    region: string;
-    scope: string;
-  };
-  source: {
-    catalog: string;
-    entry: string;
-    version: string;
-    updatedAt: string;
-  };
-  observedCriteria: string[];
-  unknownCriteria: string[];
-  requiredEvidence: string[];
-  nextStep: string;
-};
-
-type SmeStatus = "micro" | "small" | "medium" | "not_sme" | "unknown";
-type SupportPurpose = "" | "working_capital" | "investment" | "guarantee" | "digitalization" | "consulting" | "other";
+type SmeStatus = BenefitPreviewSmeStatus;
+type SupportPurpose = "" | BenefitPreviewPurpose;
 
 type SupportAnswers = {
   region: string;
@@ -51,26 +42,17 @@ type SupportAnswers = {
   industry: string;
 };
 
-type EvaluatedBenefit = {
-  item: DemoBenefitSuggestion;
-  reasons: string[];
-  unknowns: string[];
-  score: number;
-  originalIndex: number;
-};
-
 const segmentLabels: Record<string, string> = {
   micro: "Микробизнес",
   small: "Малый бизнес",
   medium: "Средний бизнес",
 };
 
-const smeStatusLabels: Record<SmeStatus, string> = {
-  micro: "Микропредприятие",
-  small: "Малое предприятие",
-  medium: "Среднее предприятие",
-  not_sme: "Не относится к МСП",
-  unknown: "Статус неизвестен",
+const financialSourceLabels: Record<ClientProfile["financials"][number]["source"], string> = {
+  CLIENT: "отчётность клиента",
+  BANK: "данные банка",
+  DEMO_SEED: "демо-отчётность",
+  LEGACY: "перенесённая отчётность",
 };
 
 const purposeLabels: Record<Exclude<SupportPurpose, "">, string> = {
@@ -80,14 +62,6 @@ const purposeLabels: Record<Exclude<SupportPurpose, "">, string> = {
   digitalization: "Цифровизация",
   consulting: "Консультации или обучение",
   other: "Другая цель",
-};
-
-const purposePatterns: Record<Exclude<SupportPurpose, "" | "other">, RegExp> = {
-  working_capital: /оборот|кассов|контракт|финанс|кредит/i,
-  investment: /инвест|оборуд|модерниз|развити|финанс/i,
-  guarantee: /гарант|поручитель|обеспеч|залог/i,
-  digitalization: /цифр|автоматиз|электрон|уч[её]т|склад/i,
-  consulting: /консультац|обучен|бизнес-план|нефинанс|молод/i,
 };
 
 const emptyAnswers: SupportAnswers = {
@@ -128,80 +102,33 @@ function getInitialAnswers(profile: ClientProfile): SupportAnswers {
   };
 }
 
-function formatAmount(value: string): string {
-  const amount = Number(value);
-  return Number.isFinite(amount) && amount > 0 ? `${amount.toLocaleString("ru-RU")} ₽` : value;
-}
-
-function evaluateBenefits(items: DemoBenefitSuggestion[], answers: SupportAnswers): EvaluatedBenefit[] {
-  const purpose = answers.purpose;
-
-  return items
-    .map((item, originalIndex): EvaluatedBenefit | null => {
-      const searchable = [item.title, item.category, item.description, item.benefit, item.applicability.scope].join(" ");
-      const searchableLower = searchable.toLocaleLowerCase("ru-RU");
-      const explicitlyForSme = searchableLower.includes("мсп");
-
-      if (answers.smeStatus === "not_sme" && explicitlyForSme) return null;
-      if (purpose && purpose !== "other" && !purposePatterns[purpose].test(searchable)) return null;
-
-      const reasons: string[] = [];
-      const unknowns: string[] = [];
-      let score = 0;
-
-      if (purpose === "other") {
-        reasons.push("Другая цель не используется для автоматической фильтрации; показаны существующие направления без отправки на ручную проверку.");
-      } else if (purpose) {
-        reasons.push(`В описании направления есть связь с целью «${purposeLabels[purpose]}».`);
-        score += 4;
-      }
-
-      if (explicitlyForSme && answers.smeStatus !== "unknown") {
-        reasons.push(`В опросе указан статус «${smeStatusLabels[answers.smeStatus]}», а направление рассчитано на МСП.`);
-        score += 2;
-      } else if (answers.smeStatus === "unknown") {
-        unknowns.push("Статус МСП нужно подтвердить по актуальному реестру.");
-      }
-
-      if (item.observedCriteria.length > 0) {
-        reasons.push(`Направление уже подобрано по данным профиля: ${item.observedCriteria.join("; ")}.`);
-        score += 2;
-      }
-
-      const normalizedRegion = answers.region.toLocaleLowerCase("ru-RU").replace(/^г\.\s*/, "").trim();
-      const itemRegion = item.applicability.region.toLocaleLowerCase("ru-RU");
-      if (normalizedRegion.length >= 3 && itemRegion.includes(normalizedRegion)) {
-        reasons.push(`В описании направления указан регион «${answers.region}».`);
-        score += 1;
-      } else {
-        unknowns.push(`Доступность в регионе «${answers.region}» не подтверждена.`);
-      }
-
-      if (answers.amount || answers.term) {
-        const amountLabel = answers.amount ? formatAmount(answers.amount) : "не указана";
-        const termLabel = answers.term ? `${answers.term} мес.` : "не указан";
-        unknowns.push(`Диапазоны для суммы ${amountLabel} и срока ${termLabel} в данных направления не указаны и не влияют на сортировку.`);
-      }
-
-      return { item, reasons, unknowns, score, originalIndex };
-    })
-    .filter((result): result is EvaluatedBenefit => result !== null)
-    .sort((left, right) => right.score - left.score || left.originalIndex - right.originalIndex);
-}
-
-function MetricCard({ icon, label, term, value, hint }: { icon: ReactNode; label: string; term?: TermKey; value: string; hint: string }) {
+function MetricCard({ icon, label, term, value, hint, metadata }: {
+  icon: ReactNode;
+  label: string;
+  term?: TermKey;
+  value: string;
+  hint: string;
+  metadata?: { source: string; freshness: string; status: string };
+}) {
   return (
     <Card className="gap-3 py-5">
       <CardContent className="space-y-2">
         <div className="flex items-center gap-2 text-sm text-muted-foreground">{icon}<span>{label}{term && <TermHint term={term} />}</span></div>
         <p className="text-2xl font-bold tracking-tight">{value}</p>
         <p className="text-xs text-muted-foreground">{hint}</p>
+        {metadata && (
+          <div className="space-y-1 border-t pt-2 text-xs leading-relaxed text-muted-foreground">
+            <p><span className="font-medium text-foreground/80">Источник:</span> {metadata.source}</p>
+            <p><span className="font-medium text-foreground/80">Актуальность:</span> {metadata.freshness}</p>
+            <p><span className="font-medium text-foreground/80">Статус:</span> {metadata.status}</p>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
 }
 
-function BenefitCard({ result, questionnaireApplied }: { result: EvaluatedBenefit; questionnaireApplied: boolean }) {
+function BenefitCard({ result, questionnaireApplied }: { result: BenefitPreviewItem; questionnaireApplied: boolean }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const detailsId = `benefit-details-${result.item.id}`;
   const item = result.item;
@@ -294,12 +221,26 @@ export default function Profile() {
   const [profile, setProfile] = useState<ClientProfile | null>(null);
   const [error, setError] = useState("");
   const [answers, setAnswers] = useState<SupportAnswers>(emptyAnswers);
-  const [appliedAnswers, setAppliedAnswers] = useState<SupportAnswers | null>(null);
+  const [preview, setPreview] = useState<BenefitPreviewResponse | null>(null);
+  const [previewError, setPreviewError] = useState("");
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const previewRequest = useRef(0);
+
+  const updateAnswers = (patch: Partial<SupportAnswers>) => {
+    previewRequest.current += 1;
+    setAnswers((current) => ({ ...current, ...patch }));
+    setPreview(null);
+    setPreviewError("");
+    setPreviewBusy(false);
+  };
 
   const loadProfile = (data: ClientProfile) => {
+    previewRequest.current += 1;
     setProfile(data);
     setAnswers(getInitialAnswers(data));
-    setAppliedAnswers(null);
+    setPreview(null);
+    setPreviewError("");
+    setPreviewBusy(false);
   };
 
   const retry = () => {
@@ -339,25 +280,65 @@ export default function Profile() {
 
   const latestFinancials = profile.financials[0] ?? null;
   const bki = profile.credit_history;
-  const benefits = profile.benefits as DemoBenefitSuggestion[];
-  const displayedBenefits = appliedAnswers
-    ? evaluateBenefits(benefits, appliedAnswers)
-    : benefits.map((item, originalIndex) => ({ item, reasons: [], unknowns: [], score: 0, originalIndex }));
+  const debtLoadSources = [
+    latestFinancials ? financialSourceLabels[latestFinancials.source] : null,
+    bki ? "кредитная история в профиле" : null,
+  ].filter((source): source is string => Boolean(source));
+  const debtLoadFreshness = [
+    latestFinancials ? `отчётность за ${latestFinancials.year} г., запись от ${date(latestFinancials.verified_at ?? latestFinancials.submitted_at)}` : null,
+    bki?.updated_at ? `БКИ на ${date(bki.updated_at)}` : null,
+  ].filter((value): value is string => Boolean(value));
+  const debtLoadStatus = profile.indicators.pdn_percent === null
+    ? "Расчёт недоступен по текущим данным"
+    : latestFinancials?.status === "VERIFIED"
+      ? "Отчётность отмечена как проверенная; сам расчёт не подтверждён"
+      : "Расчёт по непроверенной отчётности; требует уточнения";
+  const benefits = profile.benefits;
+  const displayedBenefits: BenefitPreviewItem[] = preview
+    ? preview.items
+    : benefits.map((item) => ({ item, reasons: [], unknowns: [] }));
   const questionnaireComplete = Boolean(
     answers.region.trim()
     && answers.smeStatus
     && answers.purpose,
   );
 
-  const submitQuestionnaire = (event: FormEvent<HTMLFormElement>) => {
+  const submitQuestionnaire = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!questionnaireComplete) return;
-    setAppliedAnswers({ ...answers });
+    if (!questionnaireComplete || !answers.purpose) return;
+
+    const requestId = ++previewRequest.current;
+    setPreviewBusy(true);
+    setPreviewError("");
+    try {
+      const result = await api.previewClientBenefits({
+        region: answers.region.trim(),
+        sme_status: answers.smeStatus,
+        purpose: answers.purpose,
+        ...(answers.amount ? { amount: Number(answers.amount) } : {}),
+        ...(answers.term ? { term_months: Number(answers.term) } : {}),
+        ...(answers.industry.trim() ? { industry: answers.industry.trim() } : {}),
+      });
+      if (previewRequest.current === requestId) setPreview(result);
+    } catch (reason) {
+      if (previewRequest.current === requestId) {
+        setPreviewError(reason instanceof Error ? reason.message : "Не удалось выполнить предварительный расчёт");
+      }
+    } finally {
+      if (previewRequest.current === requestId) setPreviewBusy(false);
+    }
+  };
+
+  const clearPreview = () => {
+    previewRequest.current += 1;
+    setPreview(null);
+    setPreviewError("");
+    setPreviewBusy(false);
   };
 
   const resetQuestionnaire = () => {
     setAnswers(getInitialAnswers(profile));
-    setAppliedAnswers(null);
+    clearPreview();
   };
 
   return (
@@ -396,8 +377,30 @@ export default function Profile() {
             <p className="text-sm text-muted-foreground">Краткий обзор данных профиля без оценки вероятности одобрения</p>
           </div>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            <MetricCard icon={<ShieldCheck className="h-4 w-4" />} label="Кредитная история" term="bki" value={bki ? String(bki.bki_score) : "Нет данных"} hint="Балл из данных профиля. Сам по себе он не определяет решение." />
-            <MetricCard icon={<WalletCards className="h-4 w-4" />} label="Долговая нагрузка" term="pdn" value={percent(profile.indicators.pdn_percent)} hint="Доля среднемесячной выручки, которая уходит на обязательства." />
+            <MetricCard
+              icon={<ShieldCheck className="h-4 w-4" />}
+              label="Кредитная история"
+              term="bki"
+              value={bki ? String(bki.bki_score) : "Нет данных"}
+              hint="Балл из данных профиля. Сам по себе он не определяет решение."
+              metadata={{
+                source: "Кредитная история в профиле",
+                freshness: bki?.updated_at ? date(bki.updated_at) : "Дата не указана",
+                status: bki ? "Статус проверки источника не передан" : "Запись отсутствует",
+              }}
+            />
+            <MetricCard
+              icon={<WalletCards className="h-4 w-4" />}
+              label="Долговая нагрузка"
+              term="pdn"
+              value={percent(profile.indicators.pdn_percent)}
+              hint="Доля среднемесячной выручки, которая уходит на обязательства."
+              metadata={{
+                source: debtLoadSources.join(" + ") || "Данные отсутствуют",
+                freshness: debtLoadFreshness.join("; ") || "Дата не определена",
+                status: debtLoadStatus,
+              }}
+            />
             <MetricCard icon={<TrendingUp className="h-4 w-4" />} label="Изменение выручки" value={percent(profile.indicators.revenue_growth_percent)} hint="Сравнение с предыдущим доступным годом." />
           </div>
         </section>
@@ -480,18 +483,18 @@ export default function Profile() {
           <Card className="border-blue-200">
             <CardHeader>
               <CardTitle className="text-lg">Упорядочить направления</CardTitle>
-              <CardDescription>Регион, статус и отрасль подставлены из профиля — проверьте их. Опрос не ищет новые программы и не подтверждает право на участие; ответы используются только на этой странице, не отправляются и не сохраняются.</CardDescription>
+              <CardDescription>Регион, статус и отрасль подставлены из профиля — проверьте их. При расчёте ответы отправляются серверу один раз, используются только для упорядочивания этой подборки и не сохраняются. Опрос не ищет новые программы и не подтверждает право на участие.</CardDescription>
             </CardHeader>
             <CardContent>
-              <form className="space-y-5" onSubmit={submitQuestionnaire}>
+              <form className="space-y-5" onSubmit={submitQuestionnaire} aria-busy={previewBusy}>
                 <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                   <div className="space-y-1.5">
                     <Label htmlFor="support-region">Регион</Label>
-                    <Input id="support-region" value={answers.region} onChange={(event) => setAnswers((current) => ({ ...current, region: event.target.value }))} placeholder="Например, Москва" required />
+                    <Input id="support-region" value={answers.region} onChange={(event) => updateAnswers({ region: event.target.value })} placeholder="Например, Москва" required />
                   </div>
                   <div className="space-y-1.5">
                     <Label htmlFor="support-sme-status">Статус МСП</Label>
-                    <Select value={answers.smeStatus} onValueChange={(value: SmeStatus) => setAnswers((current) => ({ ...current, smeStatus: value }))}>
+                    <Select value={answers.smeStatus} onValueChange={(value: SmeStatus) => updateAnswers({ smeStatus: value })}>
                       <SelectTrigger id="support-sme-status" className="w-full"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="micro">Микропредприятие</SelectItem>
@@ -504,7 +507,7 @@ export default function Profile() {
                   </div>
                   <div className="space-y-1.5 sm:col-span-2 lg:col-span-1">
                     <Label htmlFor="support-purpose">Цель</Label>
-                    <Select value={answers.purpose} onValueChange={(value: Exclude<SupportPurpose, "">) => setAnswers((current) => ({ ...current, purpose: value }))}>
+                    <Select value={answers.purpose} onValueChange={(value: Exclude<SupportPurpose, "">) => updateAnswers({ purpose: value })}>
                       <SelectTrigger id="support-purpose" className="w-full"><SelectValue placeholder="Выберите цель" /></SelectTrigger>
                       <SelectContent>
                         {Object.entries(purposeLabels).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}
@@ -513,51 +516,54 @@ export default function Profile() {
                   </div>
                   <div className="space-y-1.5">
                     <Label htmlFor="support-amount">Ориентировочная сумма, ₽ <span className="font-normal text-muted-foreground">(необязательно)</span></Label>
-                    <Input id="support-amount" type="number" inputMode="numeric" min="1" step="1" value={answers.amount} onChange={(event) => setAnswers((current) => ({ ...current, amount: event.target.value }))} placeholder="1 000 000" />
+                    <Input id="support-amount" type="number" inputMode="numeric" min="1" step="1" value={answers.amount} onChange={(event) => updateAnswers({ amount: event.target.value })} placeholder="1 000 000" />
                     <p className="text-xs text-muted-foreground">Покажем как условие для проверки; структурированных лимитов в демо-каталоге нет.</p>
                   </div>
                   <div className="space-y-1.5">
                     <Label htmlFor="support-term">Ориентировочный срок, мес. <span className="font-normal text-muted-foreground">(необязательно)</span></Label>
-                    <Input id="support-term" type="number" inputMode="numeric" min="1" step="1" value={answers.term} onChange={(event) => setAnswers((current) => ({ ...current, term: event.target.value }))} placeholder="24" />
+                    <Input id="support-term" type="number" inputMode="numeric" min="1" step="1" value={answers.term} onChange={(event) => updateAnswers({ term: event.target.value })} placeholder="24" />
                     <p className="text-xs text-muted-foreground">Не влияет на сортировку, пока у направлений нет проверенных диапазонов.</p>
                   </div>
                   <div className="space-y-1.5 sm:col-span-2 lg:col-span-1">
                     <Label htmlFor="support-industry">Отрасль <span className="font-normal text-muted-foreground">(справочно)</span></Label>
-                    <Input id="support-industry" value={answers.industry} onChange={(event) => setAnswers((current) => ({ ...current, industry: event.target.value }))} placeholder="Вид деятельности" />
-                    <p className="text-xs text-muted-foreground">Направления уже предварительно отобраны сервером по ОКВЭД профиля. Изменение этого текста не пересчитывает отраслевое соответствие.</p>
+                    <Input id="support-industry" value={answers.industry} onChange={(event) => updateAnswers({ industry: event.target.value })} placeholder="Вид деятельности" />
+                    <p className="text-xs text-muted-foreground">Сервер сверяет этот ответ только с каноническим ОКВЭД профиля; свободный текст не подтверждает отраслевое соответствие.</p>
                   </div>
                 </div>
 
                 <div className="flex flex-col gap-2 sm:flex-row">
-                  <Button type="submit" disabled={!questionnaireComplete}>{appliedAnswers ? "Обновить порядок" : "Упорядочить направления"}</Button>
+                  <Button type="submit" disabled={!questionnaireComplete || previewBusy}>
+                    {previewBusy ? "Расчёт на сервере…" : preview ? "Обновить порядок" : "Упорядочить направления"}
+                  </Button>
                   <Button type="button" variant="outline" onClick={resetQuestionnaire}><RotateCcw /> Сбросить опрос</Button>
                 </div>
+                {previewError && <p className="text-sm text-destructive" role="alert">{previewError}</p>}
               </form>
             </CardContent>
           </Card>
 
           <div className="flex flex-wrap items-end justify-between gap-2" aria-live="polite">
             <div>
-              <h3 className="font-semibold">{appliedAnswers ? "Упорядоченные направления" : "Направления, отобранные по профилю"}</h3>
+              <h3 className="font-semibold">{preview ? "Упорядоченные направления" : "Направления, отобранные по профилю"}</h3>
               <p className="text-sm text-muted-foreground">
-                {appliedAnswers
-                  ? `Показано ${displayedBenefits.length} из ${benefits.length}. Это локальная сортировка уже отобранных направлений, а не проверка права.`
-                  : `Показано ${benefits.length}. Заполните опрос, чтобы изменить порядок и скрыть явно неподходящие варианты.`}
+                {preview
+                  ? `Показано ${displayedBenefits.length} из ${benefits.length}. Сервер выполнил одноразовое упорядочивание без проверки права, внешних данных и сохранения ответов.`
+                  : `Показано ${benefits.length}. Заполните опрос, чтобы сервер изменил порядок и скрыл явно несовместимые варианты.`}
               </p>
             </div>
-            {appliedAnswers && <Button type="button" variant="ghost" size="sm" onClick={() => setAppliedAnswers(null)}>Изменить ответы без фильтра</Button>}
+            {preview && <Button type="button" variant="ghost" size="sm" onClick={clearPreview}>Изменить ответы без фильтра</Button>}
           </div>
 
           {displayedBenefits.length > 0 ? (
             <div className="grid gap-4 lg:grid-cols-2">
-              {displayedBenefits.map((result) => <BenefitCard key={result.item.id} result={result} questionnaireApplied={Boolean(appliedAnswers)} />)}
+              {displayedBenefits.map((result) => <BenefitCard key={result.item.id} result={result} questionnaireApplied={Boolean(preview)} />)}
             </div>
           ) : (
             <Card>
               <CardContent className="py-8 text-center">
                 <p className="font-semibold">Среди доступных направлений совпадений не найдено</p>
                 <p className="mt-1 text-sm text-muted-foreground">Измените цель или статус МСП. Новые и реальные программы этот опрос не ищет.</p>
-                <Button type="button" variant="outline" className="mt-4" onClick={() => setAppliedAnswers(null)}>Изменить ответы</Button>
+                <Button type="button" variant="outline" className="mt-4" onClick={clearPreview}>Изменить ответы</Button>
               </CardContent>
             </Card>
           )}
