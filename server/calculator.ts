@@ -120,7 +120,7 @@ export interface ProductSelection {
   alternatives: ProductSelectionOption[];
 }
 
-export type CalculationSelectionSource = "SYSTEM_RECOMMENDED" | "CLIENT_ALTERNATIVE";
+export type CalculationSelectionSource = "SYSTEM_RECOMMENDED" | "CLIENT_SELECTED" | "CLIENT_ALTERNATIVE";
 
 export function chooseProductForCalculation(selection: ProductSelection, productId?: number): {
   selected: ProductSelectionOption;
@@ -129,8 +129,11 @@ export function chooseProductForCalculation(selection: ProductSelection, product
   systemRecommendedProductId: number;
 } {
   const systemRecommendedProductId = selection.recommended.product.id;
-  if (productId === undefined || productId === systemRecommendedProductId) {
+  if (productId === undefined) {
     return { selected: selection.recommended, selection, source: "SYSTEM_RECOMMENDED", systemRecommendedProductId };
+  }
+  if (productId === systemRecommendedProductId) {
+    return { selected: selection.recommended, selection, source: "CLIENT_SELECTED", systemRecommendedProductId };
   }
 
   const options = [selection.recommended, ...selection.alternatives];

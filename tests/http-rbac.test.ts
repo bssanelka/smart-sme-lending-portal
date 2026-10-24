@@ -79,6 +79,25 @@ function createOffer(loginName = "client1", validUntil = new Date(Date.now() + 8
   return applicationId;
 }
 
+function createMoreInfoApplication(requestType: "SYSTEM_RETRY" | "COMMENT", requestStatus: "RECHECK" | "WAITING_CLIENT" | "CLOSED") {
+  const applicationId = createApplication("MORE_INFO");
+  const timestamp = new Date().toISOString();
+  const requestId = Number(database.prepare(`
+    INSERT INTO more_info_requests (
+      application_id, request_type, reason, required_fields_json, required_files_json,
+      due_at, status, source, requested_by, created_at
+    ) VALUES (?, ?, 'HTTP retry test', '[]', '[]', ?, ?, 'BANK', ?, ?)
+  `).run(
+    applicationId,
+    requestType,
+    new Date(Date.now() + 86_400_000).toISOString(),
+    requestStatus,
+    user("bank").id,
+    timestamp,
+  ).lastInsertRowid);
+  return { applicationId, requestId };
+}
+
 describe("HTTP authentication, RBAC and command boundaries", () => {
   it("rejects anonymous access with the common 401 envelope", async () => {
     const response = await app.request("/api/applications/mine");
@@ -274,6 +293,76 @@ describe("HTTP authentication, RBAC and command boundaries", () => {
     expect(database.prepare("SELECT status FROM applications WHERE id = ?").get(applicationId)).toEqual({ status: "MORE_INFO" });
     expect(database.prepare("SELECT request_type, status FROM more_info_requests WHERE application_id = ? ORDER BY id DESC LIMIT 1").get(applicationId))
       .toEqual({ request_type: "COMMENT", status: "WAITING_CLIENT" });
+  });
+
+  it("rejects an ordinary bank decision while the application is in MORE_INFO", async () => {
+    const bankCookie = await login("bank");
+    const applicationId = createApplication("MORE_INFO");
+    const response = await authenticatedRequest(`/api/bank/applications/${applicationId}/decision`, bankCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() },
+      body: JSON.stringify({ type: "REJECT", reason: "Недостаточно подтверждающих сведений" }),
+    });
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ ok: false, error: expect.any(String) });
+    expect(database.prepare("SELECT status, decision FROM applications WHERE id = ?").get(applicationId))
+      .toEqual({ status: "MORE_INFO", decision: null });
+  });
+
+  it("allows only bank users to retry a SYSTEM_RETRY request", async () => {
+    const clientCookie = await login("client1");
+    const { applicationId, requestId } = createMoreInfoApplication("SYSTEM_RETRY", "RECHECK");
+    const response = await authenticatedRequest(`/api/bank/applications/${applicationId}/more-info/retry`, clientCookie, {
+      method: "POST",
+      headers: { "Idempotency-Key": crypto.randomUUID() },
+    });
+
+    expect(response.status).toBe(403);
+    expect(database.prepare("SELECT status FROM more_info_requests WHERE id = ?").get(requestId)).toEqual({ status: "RECHECK" });
+    expect((database.prepare("SELECT COUNT(*) AS count FROM more_info_responses WHERE request_id = ?").get(requestId) as { count: number }).count).toBe(0);
+  });
+
+  it("retries a SYSTEM_RETRY request once and replays the same idempotency key", async () => {
+    const bankCookie = await login("bank");
+    const { applicationId, requestId } = createMoreInfoApplication("SYSTEM_RETRY", "RECHECK");
+    const key = crypto.randomUUID();
+    const request = () => authenticatedRequest(`/api/bank/applications/${applicationId}/more-info/retry`, bankCookie, {
+      method: "POST",
+      headers: { "Idempotency-Key": key },
+    });
+
+    const first = await request();
+    const firstPayload = await first.json();
+    const eventCount = database.prepare("SELECT COUNT(*) AS count FROM application_events WHERE application_id = ?").get(applicationId);
+    const replay = await request();
+
+    expect(first.status).toBe(200);
+    expect(firstPayload).toEqual({ ok: true, data: expect.objectContaining({ id: applicationId }) });
+    expect(database.prepare("SELECT status FROM more_info_requests WHERE id = ?").get(requestId)).toEqual({ status: "CLOSED" });
+    expect(database.prepare("SELECT source FROM more_info_responses WHERE request_id = ?").get(requestId)).toEqual({ source: "BANK" });
+    expect(replay.status).toBe(200);
+    expect(replay.headers.get("Idempotency-Replayed")).toBe("true");
+    expect(await replay.json()).toEqual(firstPayload);
+    expect(database.prepare("SELECT COUNT(*) AS count FROM application_events WHERE application_id = ?").get(applicationId)).toEqual(eventCount);
+    expect((database.prepare("SELECT COUNT(*) AS count FROM more_info_responses WHERE request_id = ?").get(requestId) as { count: number }).count).toBe(1);
+  });
+
+  it.each([
+    ["COMMENT", "WAITING_CLIENT"],
+    ["SYSTEM_RETRY", "CLOSED"],
+  ] as const)("returns 409 for retry request type %s in status %s", async (requestType, requestStatus) => {
+    const bankCookie = await login("bank");
+    const { applicationId, requestId } = createMoreInfoApplication(requestType, requestStatus);
+    const response = await authenticatedRequest(`/api/bank/applications/${applicationId}/more-info/retry`, bankCookie, {
+      method: "POST",
+      headers: { "Idempotency-Key": crypto.randomUUID() },
+    });
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ ok: false, error: "Нет системной проверки, ожидающей повтора" });
+    expect(database.prepare("SELECT status FROM more_info_requests WHERE id = ?").get(requestId)).toEqual({ status: requestStatus });
+    expect((database.prepare("SELECT COUNT(*) AS count FROM more_info_responses WHERE request_id = ?").get(requestId) as { count: number }).count).toBe(0);
   });
 
   it("does not expose internal score, grade, points or final risk assessment to clients", async () => {

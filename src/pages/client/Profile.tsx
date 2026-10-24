@@ -1,13 +1,12 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Link } from "react-router";
 import {
   ArrowLeft,
-  BadgePercent,
   Building2,
   CircleAlert,
   ClipboardList,
-  Clock3,
   Landmark,
+  RotateCcw,
   Send,
   ShieldCheck,
   TrendingUp,
@@ -17,6 +16,9 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import TermHint, { type TermKey } from "@/components/TermHint";
 import { api, fmtMoney, type BenefitSuggestion, type ClientProfile } from "@/lib/api";
 
@@ -37,10 +39,64 @@ type DemoBenefitSuggestion = BenefitSuggestion & {
   nextStep: string;
 };
 
+type SmeStatus = "micro" | "small" | "medium" | "not_sme" | "unknown";
+type SupportPurpose = "" | "working_capital" | "investment" | "guarantee" | "digitalization" | "consulting" | "other";
+
+type SupportAnswers = {
+  region: string;
+  smeStatus: SmeStatus;
+  purpose: SupportPurpose;
+  amount: string;
+  term: string;
+  industry: string;
+};
+
+type EvaluatedBenefit = {
+  item: DemoBenefitSuggestion;
+  reasons: string[];
+  unknowns: string[];
+  score: number;
+  originalIndex: number;
+};
+
 const segmentLabels: Record<string, string> = {
   micro: "Микробизнес",
   small: "Малый бизнес",
   medium: "Средний бизнес",
+};
+
+const smeStatusLabels: Record<SmeStatus, string> = {
+  micro: "Микропредприятие",
+  small: "Малое предприятие",
+  medium: "Среднее предприятие",
+  not_sme: "Не относится к МСП",
+  unknown: "Статус неизвестен",
+};
+
+const purposeLabels: Record<Exclude<SupportPurpose, "">, string> = {
+  working_capital: "Оборотные средства",
+  investment: "Оборудование или развитие",
+  guarantee: "Гарантия или поручительство",
+  digitalization: "Цифровизация",
+  consulting: "Консультации или обучение",
+  other: "Другая цель",
+};
+
+const purposePatterns: Record<Exclude<SupportPurpose, "" | "other">, RegExp> = {
+  working_capital: /оборот|кассов|контракт|финанс|кредит/i,
+  investment: /инвест|оборуд|модерниз|развити|финанс/i,
+  guarantee: /гарант|поручитель|обеспеч|залог/i,
+  digitalization: /цифр|автоматиз|электрон|уч[её]т|склад/i,
+  consulting: /консультац|обучен|бизнес-план|нефинанс|молод/i,
+};
+
+const emptyAnswers: SupportAnswers = {
+  region: "",
+  smeStatus: "unknown",
+  purpose: "",
+  amount: "",
+  term: "",
+  industry: "",
 };
 
 function percent(value: number | null): string {
@@ -49,6 +105,88 @@ function percent(value: number | null): string {
 
 function date(value: string): string {
   return new Date(value).toLocaleDateString("ru-RU", { day: "2-digit", month: "long", year: "numeric" });
+}
+
+function inferRegion(address: string): string {
+  const firstAddressPart = address.split(",")[0]?.trim();
+  return firstAddressPart || address;
+}
+
+function getInitialAnswers(profile: ClientProfile): SupportAnswers {
+  const profileSegment = profile.company.segment;
+  const smeStatus: SmeStatus = profileSegment === "micro" || profileSegment === "small" || profileSegment === "medium"
+    ? profileSegment
+    : "unknown";
+
+  return {
+    region: inferRegion(profile.company.address),
+    smeStatus,
+    purpose: "",
+    amount: "",
+    term: "",
+    industry: `${profile.company.okved_code} · ${profile.company.okved_name}`,
+  };
+}
+
+function formatAmount(value: string): string {
+  const amount = Number(value);
+  return Number.isFinite(amount) && amount > 0 ? `${amount.toLocaleString("ru-RU")} ₽` : value;
+}
+
+function evaluateBenefits(items: DemoBenefitSuggestion[], answers: SupportAnswers): EvaluatedBenefit[] {
+  const purpose = answers.purpose;
+
+  return items
+    .map((item, originalIndex): EvaluatedBenefit | null => {
+      const searchable = [item.title, item.category, item.description, item.benefit, item.applicability.scope].join(" ");
+      const searchableLower = searchable.toLocaleLowerCase("ru-RU");
+      const explicitlyForSme = searchableLower.includes("мсп");
+
+      if (answers.smeStatus === "not_sme" && explicitlyForSme) return null;
+      if (purpose && purpose !== "other" && !purposePatterns[purpose].test(searchable)) return null;
+
+      const reasons: string[] = [];
+      const unknowns: string[] = [];
+      let score = 0;
+
+      if (purpose === "other") {
+        reasons.push("Другая цель не используется для автоматической фильтрации; показаны существующие направления без отправки на ручную проверку.");
+      } else if (purpose) {
+        reasons.push(`В описании направления есть связь с целью «${purposeLabels[purpose]}».`);
+        score += 4;
+      }
+
+      if (explicitlyForSme && answers.smeStatus !== "unknown") {
+        reasons.push(`В опросе указан статус «${smeStatusLabels[answers.smeStatus]}», а направление рассчитано на МСП.`);
+        score += 2;
+      } else if (answers.smeStatus === "unknown") {
+        unknowns.push("Статус МСП нужно подтвердить по актуальному реестру.");
+      }
+
+      if (item.observedCriteria.length > 0) {
+        reasons.push(`Направление уже подобрано по данным профиля: ${item.observedCriteria.join("; ")}.`);
+        score += 2;
+      }
+
+      const normalizedRegion = answers.region.toLocaleLowerCase("ru-RU").replace(/^г\.\s*/, "").trim();
+      const itemRegion = item.applicability.region.toLocaleLowerCase("ru-RU");
+      if (normalizedRegion.length >= 3 && itemRegion.includes(normalizedRegion)) {
+        reasons.push(`В описании направления указан регион «${answers.region}».`);
+        score += 1;
+      } else {
+        unknowns.push(`Доступность в регионе «${answers.region}» не подтверждена.`);
+      }
+
+      if (answers.amount || answers.term) {
+        const amountLabel = answers.amount ? formatAmount(answers.amount) : "не указана";
+        const termLabel = answers.term ? `${answers.term} мес.` : "не указан";
+        unknowns.push(`Диапазоны для суммы ${amountLabel} и срока ${termLabel} в данных направления не указаны и не влияют на сортировку.`);
+      }
+
+      return { item, reasons, unknowns, score, originalIndex };
+    })
+    .filter((result): result is EvaluatedBenefit => result !== null)
+    .sort((left, right) => right.score - left.score || left.originalIndex - right.originalIndex);
 }
 
 function MetricCard({ icon, label, term, value, hint }: { icon: ReactNode; label: string; term?: TermKey; value: string; hint: string }) {
@@ -63,111 +201,87 @@ function MetricCard({ icon, label, term, value, hint }: { icon: ReactNode; label
   );
 }
 
-function BenefitCard({ item }: { item: DemoBenefitSuggestion }) {
-  const [checklistOpen, setChecklistOpen] = useState(false);
-  const [checkedItems, setCheckedItems] = useState<Record<string, boolean>>({});
-  const checklistItems = [
-    ...item.unknownCriteria.map((label, index) => ({ id: `criterion-${index}`, label: `Подтвердить условие: ${label}` })),
-    ...item.requiredEvidence.map((label, index) => ({ id: `evidence-${index}`, label: `Подготовить подтверждение: ${label}` })),
-  ];
-  const completedItems = checklistItems.filter(({ id }) => checkedItems[id]).length;
-  const checklistId = `benefit-checklist-${item.id}`;
-
-  const toggleItem = (id: string) => {
-    setCheckedItems((current) => ({ ...current, [id]: !current[id] }));
-  };
+function BenefitCard({ result, questionnaireApplied }: { result: EvaluatedBenefit; questionnaireApplied: boolean }) {
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const detailsId = `benefit-details-${result.item.id}`;
+  const item = result.item;
 
   return (
-    <Card className="border-amber-200">
-      <CardHeader className="pb-0">
-        <div className="flex flex-wrap items-center gap-2">
+    <Card className="gap-4 border-amber-200 py-5">
+      <CardHeader className="gap-3 px-5 pb-0">
+        <div className="flex flex-wrap items-start justify-between gap-2">
           <Badge variant="outline">{item.category}</Badge>
-          <Badge variant="outline">Демо</Badge>
-          <Badge className="border-blue-200 bg-blue-50 text-blue-800">Возможное направление</Badge>
-          <Badge className="border-amber-200 bg-amber-50 text-amber-800"><CircleAlert className="mr-1 h-3.5 w-3.5" /> Требует проверки</Badge>
+          <Badge className="border-amber-200 bg-amber-50 text-amber-900">Проверка не проводилась</Badge>
         </div>
-        <CardTitle className="pt-2 text-xl">{item.title}</CardTitle>
-        <CardDescription>{item.description}</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="rounded-lg bg-neutral-100 p-3">
-          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Возможная польза</p>
-          <p className="mt-1 text-sm font-medium">{item.benefit}</p>
-        </div>
-
-        <div className="grid gap-3 rounded-lg border p-3 text-sm sm:grid-cols-2">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Регион</p>
-            <p className="mt-1">{item.applicability.region}</p>
-          </div>
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Область применимости</p>
-            <p className="mt-1">{item.applicability.scope}</p>
-          </div>
-          <div className="sm:col-span-2">
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Демонстрационный источник</p>
-            <p className="mt-1">{item.source.catalog} · раздел «{item.source.entry}»</p>
-            <p className="mt-1 text-xs text-muted-foreground">Версия {item.source.version} · demo-запись актуальна на {date(item.source.updatedAt)} · не официальный реестр программ</p>
-          </div>
-        </div>
-
-        <div className="grid gap-4 md:grid-cols-2">
-          <div>
-            <p className="mb-1 text-sm font-semibold">Выполненные наблюдаемые критерии</p>
-            <p className="mb-2 text-xs text-muted-foreground">Только признаки из профиля; они не подтверждают право на поддержку.</p>
-            <ul className="space-y-1.5 text-sm text-muted-foreground">
-              {item.observedCriteria.map((criterion) => <li key={criterion}>✓ {criterion}</li>)}
-            </ul>
-          </div>
-          <div>
-            <p className="mb-1 text-sm font-semibold">Неизвестные критерии</p>
-            <p className="mb-2 text-xs text-muted-foreground">Их нужно сверить с официальными условиями на дату обращения.</p>
-            <ul className="space-y-1.5 text-sm text-muted-foreground">
-              {item.unknownCriteria.map((criterion) => <li key={criterion}>? {criterion}</li>)}
-            </ul>
-          </div>
-        </div>
-
         <div>
-          <p className="mb-2 text-sm font-semibold">Необходимые подтверждения и документы</p>
-          <ul className="space-y-1.5 text-sm text-muted-foreground">
-            {item.requiredEvidence.map((evidence) => <li key={evidence}>• {evidence}</li>)}
-          </ul>
+          <CardTitle className="text-lg leading-snug">{item.title}</CardTitle>
+          <CardDescription className="mt-2 text-sm leading-relaxed">
+            <span className="font-medium text-foreground">Возможная польза: </span>{item.benefit}
+          </CardDescription>
         </div>
+      </CardHeader>
+
+      <CardContent className="space-y-4 px-5">
+        <dl className="grid gap-3 rounded-lg bg-neutral-100 p-3 text-sm sm:grid-cols-2">
+          <div>
+            <dt className="text-xs font-semibold text-muted-foreground">Регион</dt>
+            <dd className="mt-1">{item.applicability.region}</dd>
+          </div>
+          <div>
+            <dt className="text-xs font-semibold text-muted-foreground">Кому и для чего</dt>
+            <dd className="mt-1">{item.applicability.scope}</dd>
+          </div>
+        </dl>
+
+        {questionnaireApplied && (
+          <div className="grid gap-3 text-sm sm:grid-cols-2">
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+              <p className="font-semibold text-emerald-950">Почему показано</p>
+              <ul className="mt-2 space-y-1.5 text-emerald-950/80">
+                {result.reasons.map((reason) => <li key={reason}>• {reason}</li>)}
+              </ul>
+            </div>
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+              <p className="font-semibold text-amber-950">Что пока неизвестно</p>
+              <ul className="mt-2 space-y-1.5 text-amber-950/80">
+                {result.unknowns.map((unknown) => <li key={unknown}>• {unknown}</li>)}
+              </ul>
+            </div>
+          </div>
+        )}
 
         <Button
           type="button"
-          variant={checklistOpen ? "outline" : "default"}
-          aria-expanded={checklistOpen}
-          aria-controls={checklistId}
-          onClick={() => setChecklistOpen((current) => !current)}
+          variant="outline"
+          className="w-full sm:w-auto"
+          aria-expanded={detailsOpen}
+          aria-controls={detailsId}
+          onClick={() => setDetailsOpen((current) => !current)}
         >
-          <ClipboardList /> {checklistOpen ? "Закрыть проверку" : "Проверить соответствие"}
+          {detailsOpen ? "Скрыть подробности" : "Условия, документы и источник"}
         </Button>
 
-        {checklistOpen && (
-          <div id={checklistId} className="space-y-4 rounded-xl border border-blue-200 bg-blue-50 p-4">
+        {detailsOpen && (
+          <div id={detailsId} className="space-y-4 rounded-xl border bg-white p-4 text-sm">
             <div>
-              <p className="font-semibold">Локальный checklist проверки</p>
-              <p className="mt-1 text-xs text-muted-foreground">Отмечено {completedItems} из {checklistItems.length}. Отметки хранятся только на этой странице, ничего не отправляется и заявка не создаётся.</p>
+              <p className="font-semibold">Условия, которые нужно уточнить</p>
+              <ul className="mt-2 space-y-1.5 text-muted-foreground">
+                {item.unknownCriteria.map((criterion) => <li key={criterion}>• {criterion}</li>)}
+              </ul>
             </div>
-            <div className="space-y-2">
-              {checklistItems.map(({ id, label }) => (
-                <label key={id} className="flex cursor-pointer items-start gap-2 rounded-lg bg-white p-2 text-sm">
-                  <input
-                    type="checkbox"
-                    className="mt-1 h-4 w-4 accent-blue-700"
-                    checked={Boolean(checkedItems[id])}
-                    onChange={() => toggleItem(id)}
-                  />
-                  <span>{label}</span>
-                </label>
-              ))}
+            <div>
+              <p className="font-semibold">Что может потребоваться</p>
+              <ul className="mt-2 space-y-1.5 text-muted-foreground">
+                {item.requiredEvidence.map((evidence) => <li key={evidence}>• {evidence}</li>)}
+              </ul>
             </div>
-            <div className="rounded-lg bg-white p-3 text-sm">
-              <p className="font-semibold">Следующий шаг</p>
+            <div className="rounded-lg bg-neutral-100 p-3">
+              <p className="font-semibold">Источник записи</p>
+              <p className="mt-1 text-muted-foreground">{item.source.entry} · данные обновлены {date(item.source.updatedAt)}</p>
+            </div>
+            <div>
+              <p className="font-semibold">Возможный следующий шаг</p>
               <p className="mt-1 text-muted-foreground">{item.nextStep}</p>
-              <p className="mt-2 text-xs text-amber-800">Даже заполненный checklist не подтверждает соответствие и не является заявкой.</p>
             </div>
           </div>
         )}
@@ -179,10 +293,18 @@ function BenefitCard({ item }: { item: DemoBenefitSuggestion }) {
 export default function Profile() {
   const [profile, setProfile] = useState<ClientProfile | null>(null);
   const [error, setError] = useState("");
+  const [answers, setAnswers] = useState<SupportAnswers>(emptyAnswers);
+  const [appliedAnswers, setAppliedAnswers] = useState<SupportAnswers | null>(null);
+
+  const loadProfile = (data: ClientProfile) => {
+    setProfile(data);
+    setAnswers(getInitialAnswers(data));
+    setAppliedAnswers(null);
+  };
 
   const retry = () => {
     setError("");
-    api.clientProfile().then(setProfile).catch((reason: unknown) => {
+    api.clientProfile().then(loadProfile).catch((reason: unknown) => {
       setError(reason instanceof Error ? reason.message : "Не удалось загрузить профиль");
     });
   };
@@ -190,7 +312,7 @@ export default function Profile() {
   useEffect(() => {
     let active = true;
     api.clientProfile()
-      .then((data) => { if (active) setProfile(data); })
+      .then((data) => { if (active) loadProfile(data); })
       .catch((reason: unknown) => {
         if (active) setError(reason instanceof Error ? reason.message : "Не удалось загрузить профиль");
       });
@@ -217,6 +339,26 @@ export default function Profile() {
 
   const latestFinancials = profile.financials[0] ?? null;
   const bki = profile.credit_history;
+  const benefits = profile.benefits as DemoBenefitSuggestion[];
+  const displayedBenefits = appliedAnswers
+    ? evaluateBenefits(benefits, appliedAnswers)
+    : benefits.map((item, originalIndex) => ({ item, reasons: [], unknowns: [], score: 0, originalIndex }));
+  const questionnaireComplete = Boolean(
+    answers.region.trim()
+    && answers.smeStatus
+    && answers.purpose,
+  );
+
+  const submitQuestionnaire = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!questionnaireComplete) return;
+    setAppliedAnswers({ ...answers });
+  };
+
+  const resetQuestionnaire = () => {
+    setAnswers(getInitialAnswers(profile));
+    setAppliedAnswers(null);
+  };
 
   return (
     <div className="min-h-screen bg-neutral-50">
@@ -238,7 +380,7 @@ export default function Profile() {
               </div>
               <p className="text-sm text-white/75">Личный профиль предпринимателя</p>
               <h1 className="mt-1 text-2xl font-bold md:text-3xl">{profile.user.name}</h1>
-              <p className="mt-2 text-sm text-white/85">{profile.user.position} · логин {profile.user.login}</p>
+              <p className="mt-2 text-sm text-white/85">{profile.user.position}</p>
             </div>
             <div className="flex flex-wrap gap-2 md:max-w-xs md:justify-end">
               <Badge className="border-white/25 bg-white/15 text-white">{profile.company.form}</Badge>
@@ -248,11 +390,23 @@ export default function Profile() {
           </CardContent>
         </Card>
 
+        <section aria-labelledby="profile-metrics-title">
+          <div className="mb-3">
+            <h2 id="profile-metrics-title" className="text-xl font-bold">Ключевые показатели</h2>
+            <p className="text-sm text-muted-foreground">Краткий обзор данных профиля без оценки вероятности одобрения</p>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <MetricCard icon={<ShieldCheck className="h-4 w-4" />} label="Кредитная история" term="bki" value={bki ? String(bki.bki_score) : "Нет данных"} hint="Балл из данных профиля. Сам по себе он не определяет решение." />
+            <MetricCard icon={<WalletCards className="h-4 w-4" />} label="Долговая нагрузка" term="pdn" value={percent(profile.indicators.pdn_percent)} hint="Доля среднемесячной выручки, которая уходит на обязательства." />
+            <MetricCard icon={<TrendingUp className="h-4 w-4" />} label="Изменение выручки" value={percent(profile.indicators.revenue_growth_percent)} hint="Сравнение с предыдущим доступным годом." />
+          </div>
+        </section>
+
         <div className="grid gap-4 lg:grid-cols-2">
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2"><Building2 className="h-5 w-5 text-[#EF3124]" /> Компания</CardTitle>
-              <CardDescription>Сведения из синтетического реестра ЕГРЮЛ/ЕГРИП</CardDescription>
+              <CardDescription>Сведения из профиля компании</CardDescription>
             </CardHeader>
             <CardContent className="grid gap-x-6 gap-y-4 text-sm sm:grid-cols-2">
               <div><p className="text-muted-foreground">Наименование</p><p className="mt-1 font-medium">{profile.company.name}</p></div>
@@ -269,10 +423,10 @@ export default function Profile() {
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2"><Landmark className="h-5 w-5 text-[#EF3124]" /> Финансовый профиль</CardTitle>
-              <CardDescription>Последние доступные данные компании и БКИ. Статус показывает, проверил ли банк отчётность.</CardDescription>
+              <CardDescription>Последние доступные данные компании и кредитной истории. Статус показывает, проверил ли банк отчётность.</CardDescription>
             </CardHeader>
             <CardContent className="grid gap-x-6 gap-y-4 text-sm sm:grid-cols-2">
-              {latestFinancials && <div className="sm:col-span-2"><Badge className={latestFinancials.status === "VERIFIED" ? "bg-emerald-700" : "bg-amber-500"}>{latestFinancials.status === "VERIFIED" ? "Отчётность подтверждена банком" : "Данные предоставлены, проверка банка ожидается"}</Badge></div>}
+              {latestFinancials && <div className="sm:col-span-2"><Badge className={latestFinancials.status === "VERIFIED" ? "bg-emerald-700" : "bg-amber-100 text-amber-900"}>{latestFinancials.status === "VERIFIED" ? "Отчётность подтверждена банком" : "Данные предоставлены, проверка банка ожидается"}</Badge></div>}
               <div><p className="text-muted-foreground">Выручка {latestFinancials?.year ?? ""}</p><p className="mt-1 font-medium">{latestFinancials ? fmtMoney(latestFinancials.revenue) : "Нет данных"}</p></div>
               <div><p className="text-muted-foreground">Прибыль</p><p className="mt-1 font-medium">{latestFinancials ? fmtMoney(latestFinancials.profit) : "Нет данных"}</p></div>
               <div><p className="text-muted-foreground">Собственный капитал</p><p className="mt-1 font-medium">{latestFinancials ? fmtMoney(latestFinancials.own_capital) : "Нет данных"}</p></div>
@@ -312,35 +466,101 @@ export default function Profile() {
           </CardContent>
         </Card>
 
-        <section>
-          <div className="mb-3">
-            <h2 className="text-xl font-bold">Ключевые показатели</h2>
-            <p className="text-sm text-muted-foreground">Понятные клиентские показатели без внутреннего банковского грейда</p>
+        <section aria-labelledby="support-directions-title" className="space-y-4">
+          <div>
+            <h2 id="support-directions-title" className="text-xl font-bold">Возможные направления поддержки</h2>
+            <p className="text-sm text-muted-foreground">Список уже отобран сервером по данным профиля. Опрос только упорядочивает его и может скрыть явно неподходящие варианты.</p>
           </div>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <MetricCard icon={<ShieldCheck className="h-4 w-4" />} label="Скор БКИ" term="bki" value={bki ? String(bki.bki_score) : "Нет данных"} hint={bki && bki.bki_score >= 700 ? "Хорошая кредитная история" : "Показатель можно улучшить платёжной дисциплиной"} />
-            <MetricCard icon={<WalletCards className="h-4 w-4" />} label="Долговая нагрузка" term="pdn" value={percent(profile.indicators.pdn_percent)} hint="Доля среднемесячной выручки на обслуживание обязательств" />
-            <MetricCard icon={<TrendingUp className="h-4 w-4" />} label="Динамика выручки" value={percent(profile.indicators.revenue_growth_percent)} hint="Изменение к предыдущему доступному году" />
-            <MetricCard icon={<BadgePercent className="h-4 w-4" />} label="Рентабельность" value={percent(profile.indicators.margin_percent)} hint="Прибыль относительно годовой выручки" />
-          </div>
-        </section>
 
-        <section>
-          <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+          <div className="flex gap-3 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="note" aria-label="Ограничения демонстрационной подборки">
+            <CircleAlert className="mt-0.5 h-5 w-5 shrink-0" />
+            <p><b>Это синтетическая демо-подборка, а не официальный каталог.</b> Актуальность мер и право компании на участие не проверены; перед обращением условия нужно сверить с официальным источником.</p>
+          </div>
+
+          <Card className="border-blue-200">
+            <CardHeader>
+              <CardTitle className="text-lg">Упорядочить направления</CardTitle>
+              <CardDescription>Регион, статус и отрасль подставлены из профиля — проверьте их. Опрос не ищет новые программы и не подтверждает право на участие; ответы используются только на этой странице, не отправляются и не сохраняются.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <form className="space-y-5" onSubmit={submitQuestionnaire}>
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="support-region">Регион</Label>
+                    <Input id="support-region" value={answers.region} onChange={(event) => setAnswers((current) => ({ ...current, region: event.target.value }))} placeholder="Например, Москва" required />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="support-sme-status">Статус МСП</Label>
+                    <Select value={answers.smeStatus} onValueChange={(value: SmeStatus) => setAnswers((current) => ({ ...current, smeStatus: value }))}>
+                      <SelectTrigger id="support-sme-status" className="w-full"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="micro">Микропредприятие</SelectItem>
+                        <SelectItem value="small">Малое предприятие</SelectItem>
+                        <SelectItem value="medium">Среднее предприятие</SelectItem>
+                        <SelectItem value="not_sme">Не относится к МСП</SelectItem>
+                        <SelectItem value="unknown">Не знаю</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5 sm:col-span-2 lg:col-span-1">
+                    <Label htmlFor="support-purpose">Цель</Label>
+                    <Select value={answers.purpose} onValueChange={(value: Exclude<SupportPurpose, "">) => setAnswers((current) => ({ ...current, purpose: value }))}>
+                      <SelectTrigger id="support-purpose" className="w-full"><SelectValue placeholder="Выберите цель" /></SelectTrigger>
+                      <SelectContent>
+                        {Object.entries(purposeLabels).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="support-amount">Ориентировочная сумма, ₽ <span className="font-normal text-muted-foreground">(необязательно)</span></Label>
+                    <Input id="support-amount" type="number" inputMode="numeric" min="1" step="1" value={answers.amount} onChange={(event) => setAnswers((current) => ({ ...current, amount: event.target.value }))} placeholder="1 000 000" />
+                    <p className="text-xs text-muted-foreground">Покажем как условие для проверки; структурированных лимитов в демо-каталоге нет.</p>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="support-term">Ориентировочный срок, мес. <span className="font-normal text-muted-foreground">(необязательно)</span></Label>
+                    <Input id="support-term" type="number" inputMode="numeric" min="1" step="1" value={answers.term} onChange={(event) => setAnswers((current) => ({ ...current, term: event.target.value }))} placeholder="24" />
+                    <p className="text-xs text-muted-foreground">Не влияет на сортировку, пока у направлений нет проверенных диапазонов.</p>
+                  </div>
+                  <div className="space-y-1.5 sm:col-span-2 lg:col-span-1">
+                    <Label htmlFor="support-industry">Отрасль <span className="font-normal text-muted-foreground">(справочно)</span></Label>
+                    <Input id="support-industry" value={answers.industry} onChange={(event) => setAnswers((current) => ({ ...current, industry: event.target.value }))} placeholder="Вид деятельности" />
+                    <p className="text-xs text-muted-foreground">Направления уже предварительно отобраны сервером по ОКВЭД профиля. Изменение этого текста не пересчитывает отраслевое соответствие.</p>
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Button type="submit" disabled={!questionnaireComplete}>{appliedAnswers ? "Обновить порядок" : "Упорядочить направления"}</Button>
+                  <Button type="button" variant="outline" onClick={resetQuestionnaire}><RotateCcw /> Сбросить опрос</Button>
+                </div>
+              </form>
+            </CardContent>
+          </Card>
+
+          <div className="flex flex-wrap items-end justify-between gap-2" aria-live="polite">
             <div>
-              <h2 className="text-xl font-bold">Возможные направления поддержки</h2>
-              <p className="text-sm text-muted-foreground">Демо-каталог по профилю компании — показано {profile.benefits.length}. Право на участие не проверялось.</p>
+              <h3 className="font-semibold">{appliedAnswers ? "Упорядоченные направления" : "Направления, отобранные по профилю"}</h3>
+              <p className="text-sm text-muted-foreground">
+                {appliedAnswers
+                  ? `Показано ${displayedBenefits.length} из ${benefits.length}. Это локальная сортировка уже отобранных направлений, а не проверка права.`
+                  : `Показано ${benefits.length}. Заполните опрос, чтобы изменить порядок и скрыть явно неподходящие варианты.`}
+              </p>
             </div>
-            <Badge variant="outline" className="gap-1"><Clock3 className="h-3.5 w-3.5" /> Требуется проверка актуальности</Badge>
+            {appliedAnswers && <Button type="button" variant="ghost" size="sm" onClick={() => setAppliedAnswers(null)}>Изменить ответы без фильтра</Button>}
           </div>
-          <p className="mb-4 text-xs text-muted-foreground">Методика: детерминированные правила · каталог {profile.benefits_metadata.catalogVersion} · внешние данные и ИИ не использовались.</p>
-          <div className="grid gap-4 lg:grid-cols-2">
-            {profile.benefits.map((benefit) => <BenefitCard key={benefit.id} item={benefit as DemoBenefitSuggestion} />)}
-          </div>
-          <div className="mt-4 flex gap-2 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-            <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" />
-            <p>{profile.benefits_disclaimer}</p>
-          </div>
+
+          {displayedBenefits.length > 0 ? (
+            <div className="grid gap-4 lg:grid-cols-2">
+              {displayedBenefits.map((result) => <BenefitCard key={result.item.id} result={result} questionnaireApplied={Boolean(appliedAnswers)} />)}
+            </div>
+          ) : (
+            <Card>
+              <CardContent className="py-8 text-center">
+                <p className="font-semibold">Среди доступных направлений совпадений не найдено</p>
+                <p className="mt-1 text-sm text-muted-foreground">Измените цель или статус МСП. Новые и реальные программы этот опрос не ищет.</p>
+                <Button type="button" variant="outline" className="mt-4" onClick={() => setAppliedAnswers(null)}>Изменить ответы</Button>
+              </CardContent>
+            </Card>
+          )}
         </section>
       </main>
     </div>

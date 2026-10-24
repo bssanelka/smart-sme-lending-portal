@@ -1,13 +1,14 @@
-import { useEffect } from 'react'
+import { lazy, Suspense, useEffect } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router'
 import { useAuth } from './auth'
 import Login from './pages/Login'
-import Home from './pages/client/Home'
-import Apply from './pages/client/Apply'
-import ApplicationPage from './pages/client/ApplicationPage'
-import Profile from './pages/client/Profile'
-import Queue from './pages/bank/Queue'
-import Dossier from './pages/bank/Dossier'
+
+const Home = lazy(() => import('./pages/client/Home'))
+const Profile = lazy(() => import('./pages/client/Profile'))
+const ApplicationPage = lazy(() => import('./pages/client/ApplicationPage'))
+const Apply = lazy(() => import('./pages/client/Apply'))
+const Queue = lazy(() => import('./pages/bank/Queue'))
+const Dossier = lazy(() => import('./pages/bank/Dossier'))
 
 function StartupLoader() {
   return (
@@ -59,20 +60,22 @@ export default function App() {
     <>
       <a href="#main-content" className="sr-only fixed left-3 top-3 z-[100] rounded-md bg-white px-4 py-2 font-medium text-neutral-950 shadow-lg focus:not-sr-only">Перейти к основному содержанию</a>
       <RouteFocus />
-      <Routes>
-      <Route path="/login" element={<Login />} />
-      <Route path="/" element={
-        loading ? <StartupLoader /> :
-        <Navigate to={!user ? '/login' : user.role === 'BANK' ? '/bank' : '/dashboard'} replace />
-      } />
-      <Route path="/dashboard" element={<Guard role="CLIENT"><Home /></Guard>} />
-      <Route path="/profile" element={<Guard role="CLIENT"><Profile /></Guard>} />
-      <Route path="/apply/:id" element={<Guard role="CLIENT"><Apply /></Guard>} />
-      <Route path="/applications/:id" element={<Guard role="CLIENT"><ApplicationPage /></Guard>} />
-      <Route path="/bank" element={<Guard role="BANK"><Queue /></Guard>} />
-      <Route path="/bank/applications/:id" element={<Guard role="BANK"><Dossier /></Guard>} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+      <Suspense fallback={<StartupLoader />}>
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route path="/" element={
+            loading ? <StartupLoader /> :
+            <Navigate to={!user ? '/login' : user.role === 'BANK' ? '/bank' : '/dashboard'} replace />
+          } />
+          <Route path="/dashboard" element={<Guard role="CLIENT"><Home /></Guard>} />
+          <Route path="/profile" element={<Guard role="CLIENT"><Profile /></Guard>} />
+          <Route path="/apply/:id" element={<Guard role="CLIENT"><Apply /></Guard>} />
+          <Route path="/applications/:id" element={<Guard role="CLIENT"><ApplicationPage /></Guard>} />
+          <Route path="/bank" element={<Guard role="BANK"><Queue /></Guard>} />
+          <Route path="/bank/applications/:id" element={<Guard role="BANK"><Dossier /></Guard>} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </Suspense>
     </>
   )
 }

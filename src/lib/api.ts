@@ -126,7 +126,7 @@ export interface CalculatorProductOption {
   economics: Pick<CalculatorMetrics, "compatibilityIndex" | "compatibilityLevel" | "rate" | "monthlyPayment" | "overpayment" | "totalPayment">;
 }
 
-export type CalculationSelectionSource = "SYSTEM_RECOMMENDED" | "CLIENT_ALTERNATIVE";
+export type CalculationSelectionSource = "SYSTEM_RECOMMENDED" | "CLIENT_SELECTED" | "CLIENT_ALTERNATIVE";
 
 export interface CalculatorResponse {
   calculation_id: number;
@@ -462,7 +462,7 @@ export const api = {
   issueApplication: (id: number, idempotencyKey: string) => req<unknown>(`/api/bank/applications/${id}/issue`, { method: "POST", headers: { "Idempotency-Key": idempotencyKey } }),
   reviewFinancialReport: (id: number, reportId: number, input: { action: "VERIFY" } | { action: "REJECT"; reason: string }) =>
     req<FinancialReport>(`/api/bank/applications/${id}/financial-reports/${reportId}/review`, { method: "POST", body: JSON.stringify(input) }),
-  retryMoreInfo: (id: number) => req<unknown>(`/api/bank/applications/${id}/more-info/retry`, { method: "POST" }),
+  retryMoreInfo: (id: number, idempotencyKey: string) => req<unknown>(`/api/bank/applications/${id}/more-info/retry`, { method: "POST", headers: { "Idempotency-Key": idempotencyKey } }),
   recommendation: (id: number) => req<Recommendation>(`/api/bank/applications/${id}/recommendation`),
   summary: (id: number) => req<{ text: string; source: string }>(`/api/bank/applications/${id}/summary`),
   documentDownloadUrl: (id: number) => `/api/documents/${id}/download`,

@@ -141,7 +141,7 @@ const UserSchema = z.object({
   company_id: z.number().nullable(), position: z.string().nullable(),
 }).openapi("User");
 const ErrorSchema = z.object({ ok: z.literal(false), error: z.string() }).openapi("ApiError");
-const GenericSuccessSchema = z.object({ ok: z.literal(true), data: z.unknown() }).openapi("GenericSuccess");
+const successSchema = (dataSchema: z.ZodType) => z.object({ ok: z.literal(true), data: dataSchema });
 const ApplicationStatusSchema = z.enum(["SUBMITTED", "DATA_CHECK", "ENRICHMENT", "SCORING", "DECISION", "MORE_INFO", "OFFER", "DOCUMENTS", "SIGNING", "READY_FOR_ISSUANCE", "ISSUED", "REJECTED", "DECLINED_BY_CLIENT"]);
 const DecisionTypeSchema = z.enum(["APPROVE", "CONDITIONS", "MORE_INFO", "REJECT"]);
 const DocumentStatusSchema = z.enum(["UPLOADED", "GENERATED", "SIGNED", "UNAVAILABLE"]);
@@ -154,8 +154,7 @@ const jsonResponse = (schema: z.ZodType, description: string) => ({
   description,
   content: { "application/json": { schema } },
 });
-const standardResponses = (description = "Успешный ответ") => ({
-  200: jsonResponse(GenericSuccessSchema, description),
+const standardErrorResponses = {
   400: jsonResponse(ErrorSchema, "Некорректный запрос"),
   401: jsonResponse(ErrorSchema, "Требуется авторизация"),
   403: jsonResponse(ErrorSchema, "Недостаточно прав"),
@@ -164,7 +163,36 @@ const standardResponses = (description = "Успешный ответ") => ({
   415: jsonResponse(ErrorSchema, "Неподдерживаемый тип содержимого"),
   429: jsonResponse(ErrorSchema, "Слишком много запросов"),
   500: jsonResponse(ErrorSchema, "Внутренняя ошибка сервера"),
+};
+const standardResponses = (description: string, dataSchema: z.ZodType) => ({
+  200: jsonResponse(successSchema(dataSchema), description),
+  ...standardErrorResponses,
 });
+const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._:-]+$/;
+const IdempotencyHeadersSchema = z.object({
+  "Idempotency-Key": z.string().min(8).max(128).regex(IDEMPOTENCY_KEY_PATTERN).openapi({
+    description: "Уникальный ключ идемпотентной команды длиной от 8 до 128 символов",
+  }),
+});
+const idempotentRequest = <T extends Record<string, unknown>>(request: T) => ({
+  ...request,
+  headers: IdempotencyHeadersSchema,
+});
+const idempotentResponses = (description: string, dataSchema: z.ZodType) => {
+  const responses = standardResponses(description, dataSchema);
+  return {
+    ...responses,
+    200: {
+      ...responses[200],
+      headers: {
+        "Idempotency-Replayed": {
+          description: "Присутствует со значением true, если ответ воспроизведён для ранее выполненной команды",
+          schema: { type: "string" as const, enum: ["true"] },
+        },
+      },
+    },
+  };
+};
 
 const ok = <T>(data: T) => ({ ok: true as const, data });
 const err = (error: string) => ({ ok: false as const, error });
@@ -187,7 +215,7 @@ function idempotentJson<T>(
   command: { userId: number; operation: string; request: unknown; execute: () => T },
 ): IdempotentJsonResponse {
   const key = c.req.header("Idempotency-Key")?.trim() ?? "";
-  if (key.length < 8 || key.length > 128 || !/^[A-Za-z0-9._:-]+$/.test(key)) {
+  if (key.length < 8 || key.length > 128 || !IDEMPOTENCY_KEY_PATTERN.test(key)) {
     return c.json(err("Для команды требуется корректный заголовок Idempotency-Key длиной от 8 до 128 символов"), 400) as TypedResponse<JSONValue, 400, "json">;
   }
 
@@ -209,7 +237,7 @@ app.openapi(createRoute({
   method: "post", path: "/api/auth/login", operationId: "login", tags: ["Auth"], security: [],
   summary: "Вход (синтетическая учётная запись)",
   request: jsonBody(z.object({ login: z.string().trim().min(1).max(64), password: z.string().min(1).max(128) })),
-  responses: { ...standardResponses(), 200: jsonResponse(z.object({ ok: z.literal(true), data: UserSchema }).openapi("LoginSuccess"), "Вход выполнен") },
+  responses: standardResponses("Вход выполнен", UserSchema),
 }), (c) => {
   const { login, password } = c.req.valid("json");
   const loginKey = login.toLowerCase();
@@ -236,7 +264,7 @@ app.openapi(createRoute({
 
 app.openapi(createRoute({
   method: "post", path: "/api/auth/logout", operationId: "logout", tags: ["Auth"], summary: "Выход",
-  responses: standardResponses("Сессия завершена"),
+  responses: standardResponses("Сессия завершена", z.null()),
 }), (c) => {
   const sid = getCookie(c, "sid");
   if (sid) db.prepare("DELETE FROM sessions WHERE token = ?").run(sid);
@@ -246,13 +274,51 @@ app.openapi(createRoute({
 
 app.openapi(createRoute({
   method: "get", path: "/api/auth/me", operationId: "getCurrentUser", tags: ["Auth"], security: [], summary: "Текущий пользователь",
-  responses: { ...standardResponses(), 200: jsonResponse(z.object({ ok: z.literal(true), data: z.union([UserSchema, z.null()]) }).openapi("CurrentUserSuccess"), "Текущий пользователь") },
+  responses: standardResponses("Текущий пользователь", z.union([UserSchema, z.null()])),
 }), (c) => c.json(ok(currentUser(c))));
+
+const ProfileFinancialReportSchema = z.object({
+  id: z.number().int(), year: z.number().int(), revenue: z.number(), profit: z.number(),
+  own_capital: z.number(), monthly_obligations: z.number(), status: z.enum(["SUBMITTED", "VERIFIED"]),
+  source: z.enum(["CLIENT", "BANK", "DEMO_SEED", "LEGACY"]), submitted_at: z.string(), verified_at: z.string().nullable(),
+});
+const ProfileCreditHistorySchema = z.object({
+  bki_score: z.number(), active_credits: z.number().int(), total_debt: z.number(), overdue_count: z.number().int(),
+  worst_delay_days: z.number().int(), monthly_payment: z.number(), updated_at: z.string(),
+});
+const BenefitSuggestionSchema = z.object({
+  id: z.string(), title: z.string(), category: z.string(), status: z.literal("POSSIBLE_DIRECTION"),
+  verificationStatus: z.literal("REQUIRES_CHECK"), demo: z.literal(true), program: z.null(),
+  description: z.string(), benefit: z.string(),
+  applicability: z.object({ region: z.string(), scope: z.string() }),
+  source: z.object({ catalog: z.string(), entry: z.string(), version: z.string(), updatedAt: z.string() }),
+  observedCriteria: z.array(z.string()), unknownCriteria: z.array(z.string()), requiredEvidence: z.array(z.string()),
+  nextStep: z.string(), whyMatches: z.array(z.string()), requirements: z.array(z.string()),
+});
+const ClientProfileSchema = z.object({
+  user: UserSchema,
+  company: z.object({
+    id: z.number().int(), name: z.string(), form: z.string(), inn: z.string(), ogrn: z.string(),
+    okved_code: z.string(), okved_name: z.string(), reg_date: z.string(), address: z.string(), head_name: z.string(), segment: z.string(),
+  }),
+  financials: z.array(ProfileFinancialReportSchema),
+  credit_history: ProfileCreditHistorySchema.nullable(),
+  indicators: z.object({
+    business_age_years: z.number(), revenue_growth_percent: z.number().nullable(),
+    margin_percent: z.number().nullable(), pdn_percent: z.number().nullable(),
+  }),
+  benefits: z.array(BenefitSuggestionSchema),
+  benefits_metadata: z.object({
+    mode: z.literal("DEMO_DIRECTIONS"), methodology: z.literal("DETERMINISTIC_RULES"), catalogVersion: z.string(),
+    externalDataUsed: z.literal(false), aiUsed: z.literal(false), eligibilityChecked: z.literal(false),
+  }),
+  benefits_disclaimer: z.string(),
+}).openapi("ClientProfile");
 
 app.openapi(createRoute({
   method: "get", path: "/api/client/profile", operationId: "getClientProfile", tags: ["Client"],
   summary: "Профиль клиента, показатели бизнеса и предварительно подходящие льготы",
-  responses: standardResponses("Профиль клиента"),
+  responses: standardResponses("Профиль клиента", ClientProfileSchema),
 }), (c) => {
   const u = requireUser(c); if (!u) return c.json(err("Не авторизован"), 401);
   if (u.role !== "CLIENT" || typeof u.company_id !== "number") return c.json(err("Только для клиентов"), 403);
@@ -267,9 +333,15 @@ app.openapi(createRoute({
 });
 
 // --- meta ---
+const HealthSchema = z.object({
+  status: z.literal("up"),
+  assistantMode: z.literal("template"),
+  time: z.string(),
+}).openapi("Health");
+
 app.openapi(createRoute({
   method: "get", path: "/api/health", operationId: "getHealth", tags: ["Meta"], security: [], summary: "Состояние сервиса",
-  responses: standardResponses("Сервис доступен"),
+  responses: standardResponses("Сервис доступен", HealthSchema),
 }), (c) => c.json(ok({ status: "up", assistantMode: "template", time: now() })));
 
 // --- products ---
@@ -281,13 +353,13 @@ const ProductSchema = z.object({
 
 app.openapi(createRoute({
   method: "get", path: "/api/products", operationId: "listProducts", tags: ["Products"], security: [], summary: "Каталог кредитных продуктов",
-  responses: { ...standardResponses(), 200: jsonResponse(z.object({ ok: z.literal(true), data: z.array(ProductSchema) }).openapi("ProductListSuccess"), "Каталог продуктов") },
+  responses: standardResponses("Каталог продуктов", z.array(ProductSchema)),
 }), (c) => c.json(ok(db.prepare("SELECT id,code,name,tagline,description,min_amount,max_amount,rate_from,term_min,term_max,purpose_tags,features,min_revenue FROM products").all() as Array<z.infer<typeof ProductSchema>>)));
 
 app.openapi(createRoute({
   method: "get", path: "/api/products/{id}", operationId: "getProduct", tags: ["Products"], security: [], summary: "Продукт по id",
   request: { params: z.object({ id: z.coerce.number() }) },
-  responses: { ...standardResponses(), 200: jsonResponse(z.object({ ok: z.literal(true), data: ProductSchema }).openapi("ProductSuccess"), "Карточка продукта") },
+  responses: standardResponses("Карточка продукта", ProductSchema),
 }), (c) => {
   const p = db.prepare("SELECT id,code,name,tagline,description,min_amount,max_amount,rate_from,term_min,term_max,purpose_tags,features,min_revenue FROM products WHERE id = ?").get(c.req.valid("param").id);
   if (!p) return c.json(err("Продукт не найден"), 404);
@@ -307,11 +379,68 @@ const CalculatorRequestSchema = z.object({
   }).optional(),
 });
 
+const NeedProductSchema = z.object({
+  id: z.number().int(), code: z.string(), name: z.string(), tagline: z.string(),
+  minAmount: z.number(), maxAmount: z.number(), rateFrom: z.number(),
+  termMin: z.number().int(), termMax: z.number().int(), purposeTags: z.array(z.string()), minRevenue: z.number(),
+});
+const ProductOptionEconomicsSchema = z.object({
+  compatibilityIndex: z.number(),
+  compatibilityLevel: z.enum(["HIGH", "MEDIUM", "MANUAL_REVIEW"]),
+  rate: z.number(), monthlyPayment: z.number(), overpayment: z.number(), totalPayment: z.number(),
+});
+const ProductSelectionOptionSchema = z.object({
+  product: NeedProductSchema,
+  amount: z.number(),
+  termMonths: z.number().int(),
+  exactMatch: z.boolean(),
+  reasons: z.array(z.string()),
+  economics: ProductOptionEconomicsSchema,
+});
+const ProductSelectionSchema = z.object({
+  requested: z.object({ amount: z.number(), termMonths: z.number().int(), purposeCategory: z.string() }),
+  recommended: ProductSelectionOptionSchema,
+  alternatives: z.array(ProductSelectionOptionSchema),
+});
+const PublicFactorSchema = z.object({
+  key: z.string(), label: z.string(), value: z.string(),
+  impact: z.enum(["positive", "neutral", "negative"]), explanation: z.string(),
+});
+const CalculatorRecommendationSchema = z.object({
+  kind: z.enum(["bki", "overdue", "pdn", "refinancing", "revenue", "margin", "amount", "maintain"]),
+  title: z.string(), description: z.string(), suggestedAmount: z.number().optional(),
+  mode: z.literal("ADVISORY_ONLY").optional(),
+  comparison: z.object({ status: z.literal("NOT_CALCULATED") }).optional(),
+  requiredData: z.array(z.string()).optional(),
+});
+const PublicCalculatorVariantSchema = z.object({
+  compatibilityIndex: z.number(), compatibilityLevel: z.enum(["HIGH", "MEDIUM", "MANUAL_REVIEW"]),
+  rate: z.number(), monthlyPayment: z.number(), overpayment: z.number(), totalPayment: z.number(),
+  creditPotential: z.number(), revenueGrowth: z.number().nullable(), margin: z.number().nullable(),
+  publicFactors: z.array(PublicFactorSchema), recommendations: z.array(CalculatorRecommendationSchema),
+});
+const CalculatorEvaluationSchema = z.object({
+  calculation_id: z.number().int(),
+  selection: ProductSelectionSchema,
+  current: PublicCalculatorVariantSchema,
+  scenario: PublicCalculatorVariantSchema.nullable(),
+  disclaimer: z.string(),
+  methodology: z.literal("rule_based"),
+}).openapi("CalculatorEvaluation");
+const CalculatorRunSchema = z.object({
+  calculation_id: z.number().int(),
+  selection_source: z.enum(["SYSTEM_RECOMMENDED", "CLIENT_SELECTED", "CLIENT_ALTERNATIVE"]),
+  product: ProductSchema,
+  amount: z.number(), term_months: z.number().int(), purpose_category: z.string(),
+  requested_amount: z.number(), requested_term_months: z.number().int(), created_at: z.string(),
+  application: z.object({ id: z.number().int(), public_no: z.string(), status: ApplicationStatusSchema }).nullable(),
+}).openapi("CalculatorRun");
+
 app.openapi(createRoute({
   method: "post", path: "/api/calculator/evaluate", operationId: "evaluateCalculator", tags: ["Calculator"],
   summary: "Предварительная rule-based оценка кредита для текущего клиента",
   request: jsonBody(CalculatorRequestSchema),
-  responses: standardResponses("Предварительная оценка рассчитана"),
+  responses: standardResponses("Предварительная оценка рассчитана", CalculatorEvaluationSchema),
 }), (c) => {
   const u = requireUser(c); if (!u) return c.json(err("Не авторизован"), 401);
   if (u.role !== "CLIENT" || typeof u.company_id !== "number") return c.json(err("Только для клиентов"), 403);
@@ -406,7 +535,7 @@ app.openapi(createRoute({
   method: "get", path: "/api/calculator/runs/{id}", operationId: "getCalculatorRun", tags: ["Calculator"],
   summary: "Канонические параметры сохранённого расчёта для предзаполненной заявки",
   request: { params: z.object({ id: z.coerce.number().int().positive() }) },
-  responses: standardResponses("Сохранённый расчёт"),
+  responses: standardResponses("Сохранённый расчёт", CalculatorRunSchema),
 }), (c) => {
   const u = requireUser(c); if (!u) return c.json(err("Не авторизован"), 401);
   if (u.role !== "CLIENT") return c.json(err("Только для клиентов"), 403);
@@ -416,7 +545,7 @@ app.openapi(createRoute({
   const input = JSON.parse(calculation.input_json as string) as {
     product_id: number; amount: number; term_months: number; purpose_category: string;
     requested_amount?: number; requested_term_months?: number;
-    selection_source?: "SYSTEM_RECOMMENDED" | "CLIENT_ALTERNATIVE";
+    selection_source?: "SYSTEM_RECOMMENDED" | "CLIENT_SELECTED" | "CLIENT_ALTERNATIVE";
   };
   const product = db.prepare("SELECT id, code, name, tagline, description, min_amount, max_amount, rate_from, term_min, term_max, purpose_tags, features, min_revenue FROM products WHERE id = ?")
     .get(calculation.product_id as number);
@@ -483,6 +612,134 @@ const StoredDecisionSchema = z.object({
   preliminaryTerms: PreliminaryTermsSchema.optional(),
   finalRiskAssessment: FinalRiskAssessmentSchema.optional(),
 });
+const ClientStoredDecisionSchema = StoredDecisionSchema.omit({ finalRiskAssessment: true });
+
+const ScoreFactorSchema = z.object({
+  key: z.string(), label: z.string(), value: z.string(), points: z.number(), explanation: z.string(),
+});
+const ClientScoreFactorSchema = ScoreFactorSchema.omit({ points: true });
+const ScoringInputSchema = z.object({
+  companyAgeYears: z.number(), revenueAnnual: z.number(), profitAnnual: z.number(), bkiScore: z.number(),
+  overdueCount: z.number(), worstDelayDays: z.number(), pdn: z.number(), amountToRevenueRatio: z.number(), hasFinancials: z.boolean(),
+});
+const FinancialReportSchema = z.object({
+  id: z.number().int(), companyId: z.number().int(), applicationId: z.number().int().nullable(), year: z.number().int(),
+  revenue: z.number(), profit: z.number(), ownCapital: z.number(), monthlyObligations: z.number(),
+  status: z.enum(["SUBMITTED", "VERIFIED", "REJECTED"]), source: z.enum(["CLIENT", "BANK", "DEMO_SEED", "LEGACY"]),
+  submittedBy: z.number().int().nullable(), verifiedBy: z.number().int().nullable(), submittedAt: z.string(),
+  verifiedAt: z.string().nullable(), rejectedAt: z.string().nullable(), rejectionReason: z.string().nullable(),
+}).openapi("FinancialReport");
+const MoreInfoResponseSnapshotSchema = z.object({
+  id: z.number().int(), requestId: z.number().int(), applicationId: z.number().int(), responseType: z.string(),
+  payload: z.record(z.string(), z.unknown()), source: z.enum(["CLIENT", "SYSTEM", "BANK"]),
+  submittedBy: z.number().int().nullable(), createdAt: z.string(),
+});
+const MoreInfoRequestSnapshotSchema = z.object({
+  id: z.number().int(), applicationId: z.number().int(), type: z.enum(MORE_INFO_REQUEST_TYPES), reason: z.string(),
+  requiredFields: z.array(z.string()), requiredFiles: z.array(z.string()), dueAt: z.string(),
+  status: z.enum(["WAITING_CLIENT", "CLIENT_RESPONDED", "RECHECK", "CLOSED", "CANCELLED"]),
+  source: z.enum(["SYSTEM", "BANK"]), requestedBy: z.number().int().nullable(), createdAt: z.string(),
+  respondedAt: z.string().nullable(), closedAt: z.string().nullable(), response: MoreInfoResponseSnapshotSchema.nullable(),
+});
+const DocumentMetadataSchema = z.object({
+  id: z.number().int(), application_id: z.number().int(), kind: z.string(), filename: z.string(), status: DocumentStatusSchema,
+  document_version: z.string().nullable(), content_hash: z.string().nullable(), opened_at: z.string().nullable(),
+  opened_by: z.number().int().nullable(), acknowledged_at: z.string().nullable(), acknowledged_by: z.number().int().nullable(),
+  signed_at: z.string().nullable(), signed_by: z.number().int().nullable(), created_at: z.string(),
+}).openapi("DocumentMetadata");
+const ApplicationEventSchema = z.object({
+  id: z.number().int(), application_id: z.number().int(), from_status: ApplicationStatusSchema.nullable(),
+  to_status: ApplicationStatusSchema, actor: z.string(), comment: z.string().nullable(), created_at: z.string(),
+}).passthrough();
+const ChatMessageSchema = z.object({
+  id: z.number().int(), application_id: z.number().int().nullable(), role: z.enum(["user", "assistant"]),
+  content: z.string(), source: z.string(), created_at: z.string(),
+}).passthrough();
+const PreapprovalSchema = z.object({
+  status: z.enum(["PREAPPROVED", "REVIEW"]), label: z.string(), description: z.string(),
+});
+const CommonApplicationSchema = z.object({
+  id: z.number().int(), public_no: z.string(), client_id: z.number().int(), company_id: z.number().int(),
+  product_id: z.number().int(), amount: z.number(), term_months: z.number().int(), purpose: z.string(),
+  purpose_category: z.string(), status: ApplicationStatusSchema, created_at: z.string(), updated_at: z.string(),
+  source_calculation_id: z.number().int().nullable(), decided_at: z.string().nullable(), client_comment: z.string().nullable(),
+  signed_at: z.string().nullable(), signed_by: z.number().int().nullable(), issued_at: z.string().nullable(),
+  issued_by: z.number().int().nullable(), issuance_mode: z.string().nullable(),
+});
+const EnrichedApplicationSchema = CommonApplicationSchema.extend({
+  preliminaryTerms: PreliminaryTermsSchema.nullable(), more_info_requests: z.array(MoreInfoRequestSnapshotSchema),
+  active_more_info_request: MoreInfoRequestSnapshotSchema.nullable(), product_name: z.string(),
+  product_rate_from: z.number(), status_label: z.string(),
+});
+const ClientApplicationSchema = EnrichedApplicationSchema.extend({
+  decision: ClientStoredDecisionSchema.nullable(), preapproval: PreapprovalSchema.nullable(),
+}).openapi("ClientApplication");
+const BankApplicationSchema = EnrichedApplicationSchema.extend({
+  score: z.number().nullable(), grade: z.enum(["A", "B", "C", "D"]).nullable(),
+  score_details: z.string().nullable(), scorecard_version: z.string().nullable(), decided_by: z.number().int().nullable(),
+  decision: StoredDecisionSchema.nullable(),
+}).openapi("BankApplication");
+const ClientApplicationDetailSchema = ClientApplicationSchema.extend({
+  events: z.array(ApplicationEventSchema), documents: z.array(DocumentMetadataSchema), chat: z.array(ChatMessageSchema),
+  score_details: z.array(ClientScoreFactorSchema).nullable(),
+}).openapi("ClientApplicationDetail");
+const BankApplicationDetailSchema = BankApplicationSchema.omit({ score_details: true }).extend({
+  events: z.array(ApplicationEventSchema), documents: z.array(DocumentMetadataSchema), chat: z.array(ChatMessageSchema),
+  score_details: z.array(ScoreFactorSchema).nullable(),
+}).openapi("BankApplicationDetail");
+const ApplicationDetailSchema = z.union([ClientApplicationDetailSchema, BankApplicationDetailSchema]);
+const CreatedApplicationSchema = z.object({
+  id: z.number().int(), public_no: z.string(), created: z.boolean(),
+}).openapi("CreatedApplication");
+const DocumentAcknowledgementSchema = z.object({ documents: z.array(DocumentMetadataSchema) }).openapi("DocumentAcknowledgement");
+const CompanyRegistrySchema = z.object({
+  id: z.number().int(), name: z.string(), form: z.string(), inn: z.string(), ogrn: z.string(),
+  okved_code: z.string(), okved_name: z.string(), reg_date: z.string(), address: z.string(), head_name: z.string(), segment: z.string(),
+}).openapi("BusinessRegistryEntry");
+const CreditHistorySchema = z.object({
+  id: z.number().int(), company_id: z.number().int(), bki_score: z.number(), active_credits: z.number(),
+  total_debt: z.number(), overdue_count: z.number(), worst_delay_days: z.number(), monthly_payment: z.number(), updated_at: z.string(),
+}).openapi("CreditHistory");
+const ExternalCheckMetadataSchema = z.object({
+  id: z.number().int(), application_id: z.number().int(), kind: z.enum(["BKI", "BUSINESS_REGISTRY"]),
+  provider: z.string(), provider_version: z.string(), status: z.enum(["SUCCESS", "NOT_FOUND", "ERROR"]),
+  subject_key: z.string(), requested_at: z.string(),
+});
+const ProductEligibilitySchema = z.object({
+  productId: z.number().int(), eligible: z.boolean(),
+  violations: z.array(z.object({ code: z.string(), message: z.string() }).passthrough()),
+});
+const BankQueueApplicationSchema = BankApplicationSchema.extend({
+  company_name: z.string(), company_inn: z.string(), okved_name: z.string(), client_name: z.string(),
+}).openapi("BankQueueApplication");
+const BankDossierSchema = BankApplicationSchema.omit({ score_details: true }).extend({
+  company: CompanyRegistrySchema,
+  client_name: z.string(),
+  financial_reports: z.array(FinancialReportSchema),
+  bki: CreditHistorySchema.nullable(),
+  events: z.array(ApplicationEventSchema),
+  documents: z.array(DocumentMetadataSchema),
+  external_checks: z.object({ registry: ExternalCheckMetadataSchema.nullable(), bki: ExternalCheckMetadataSchema.nullable() }),
+  product_eligibility: z.array(ProductEligibilitySchema),
+  score_details: z.array(ScoreFactorSchema).nullable(),
+  scoring_input: ScoringInputSchema,
+}).openapi("BankDossier");
+const DecisionProposalSchema = z.object({
+  type: DecisionTypeSchema, rate: z.number().nullable(), amount: z.number().nullable(), termMonths: z.number().int().nullable(),
+  reason: z.string(), productId: z.number().int().optional(), productName: z.string().optional(),
+});
+const RecommendationSchema = z.object({
+  scorecardVersion: z.string(), score: z.number(), grade: z.enum(["A", "B", "C", "D"]),
+  factors: z.array(ScoreFactorSchema), proposal: DecisionProposalSchema, calculatedAt: z.string(),
+  supersededAt: z.string().nullable(), supersededByRequestId: z.number().int().nullable(), financialReport: FinancialReportSchema.nullable(),
+}).openapi("Recommendation");
+const TemplateAssistantResponseSchema = z.object({ text: z.string(), source: z.literal("template") }).openapi("TemplateAssistantResponse");
+const MockCreditHistorySchema = z.object({
+  source: z.string(), provider_version: z.string(), requested_at: z.string(), inn: z.string(), report: CreditHistorySchema.nullable(),
+}).openapi("MockCreditHistory");
+const MockBusinessRegistrySchema = z.object({
+  source: z.string(), provider_version: z.string(), requested_at: z.string(), registry_entry: CompanyRegistrySchema.nullable(),
+}).openapi("MockBusinessRegistry");
 
 type StoredDecision = z.infer<typeof StoredDecisionSchema>;
 
@@ -522,6 +779,7 @@ function clientApplicationView(a: Row) {
   delete publicApplication.grade;
   delete publicApplication.score_details;
   delete publicApplication.scorecard_version;
+  delete publicApplication.decided_by;
   const publicDecision = enriched.decision ? { ...enriched.decision, finalRiskAssessment: undefined } : null;
   const preapproval = a.status === "DECISION"
     ? (a.grade === "A" || a.grade === "B"
@@ -554,11 +812,11 @@ function clientEvents(events: Row[]) {
 
 app.openapi(createRoute({
   method: "post", path: "/api/applications", operationId: "createApplication", tags: ["Applications"], summary: "Подать заявку на кредит (запускает конвейер)",
-  request: jsonBody(z.object({
+  request: idempotentRequest(jsonBody(z.object({
     purpose: z.string().trim().min(5),
     calculation_id: z.number().int().positive(),
-  })),
-  responses: standardResponses("Заявка создана"),
+  }))),
+  responses: idempotentResponses("Заявка создана", CreatedApplicationSchema),
 }), (c) => {
   const u = requireUser(c);
   if (!u || u.role !== "CLIENT" || u.company_id === null) return c.json(err("Только клиент компании может подавать заявки"), 403);
@@ -619,7 +877,7 @@ app.openapi(createRoute({
 
 app.openapi(createRoute({
   method: "get", path: "/api/applications/mine", operationId: "listMyApplications", tags: ["Applications"], summary: "Мои заявки",
-  responses: standardResponses("Список заявок клиента"),
+  responses: standardResponses("Список заявок клиента", z.array(ClientApplicationSchema)),
 }), (c) => {
   const u = requireUser(c); if (!u) return c.json(err("Не авторизован"), 401);
   const rows = db.prepare("SELECT * FROM applications WHERE client_id = ? ORDER BY id DESC").all(u.id) as Row[];
@@ -629,7 +887,7 @@ app.openapi(createRoute({
 app.openapi(createRoute({
   method: "get", path: "/api/applications/{id}", operationId: "getApplication", tags: ["Applications"], summary: "Карточка заявки с ходом процесса",
   request: { params: z.object({ id: z.coerce.number() }) },
-  responses: standardResponses("Карточка заявки"),
+  responses: standardResponses("Карточка заявки", ApplicationDetailSchema),
 }), (c) => {
   const u = requireUser(c); if (!u) return c.json(err("Не авторизован"), 401);
   const a = getApplication(c.req.valid("param").id);
@@ -656,7 +914,7 @@ app.openapi(createRoute({
   method: "get", path: "/api/documents/{id}/download", operationId: "downloadDocument", tags: ["Applications"],
   summary: "Скачать синтетический документ для ознакомления",
   request: { params: z.object({ id: z.coerce.number().int().positive() }) },
-  responses: { ...standardResponses(), 200: { description: "Текстовый демонстрационный документ", content: { "text/plain": { schema: z.string() } } } },
+  responses: { ...standardErrorResponses, 200: { description: "Текстовый демонстрационный документ", content: { "text/plain": { schema: z.string() } } } },
 }), (c) => {
   const u = requireUser(c); if (!u) return c.json(err("Не авторизован"), 401);
   let document;
@@ -682,8 +940,8 @@ app.openapi(createRoute({
 app.openapi(createRoute({
   method: "post", path: "/api/applications/{id}/documents/acknowledge", operationId: "acknowledgeDocuments", tags: ["Applications"],
   summary: "Подтвердить ознакомление со всем скачанным пакетом документов",
-  request: { params: z.object({ id: z.coerce.number().int().positive() }) },
-  responses: standardResponses("Ознакомление подтверждено"),
+  request: idempotentRequest({ params: z.object({ id: z.coerce.number().int().positive() }) }),
+  responses: idempotentResponses("Ознакомление подтверждено", DocumentAcknowledgementSchema),
 }), (c) => {
   const u = requireUser(c); if (!u) return c.json(err("Не авторизован"), 401);
   if (u.role !== "CLIENT") return c.json(err("Только клиент может подтвердить ознакомление"), 403);
@@ -707,8 +965,8 @@ app.openapi(createRoute({
 
 app.openapi(createRoute({
   method: "post", path: "/api/applications/{id}/accept", operationId: "acceptOffer", tags: ["Applications"], summary: "Клиент принимает предложенные условия",
-  request: { params: z.object({ id: z.coerce.number() }) },
-  responses: standardResponses("Предложение принято"),
+  request: idempotentRequest({ params: z.object({ id: z.coerce.number() }) }),
+  responses: idempotentResponses("Предложение принято", ClientApplicationSchema),
 }), (c) => {
   const u = requireUser(c); if (!u) return c.json(err("Не авторизован"), 401);
   const applicationId = c.req.valid("param").id;
@@ -732,8 +990,8 @@ app.openapi(createRoute({
 
 app.openapi(createRoute({
   method: "post", path: "/api/applications/{id}/sign", operationId: "signDocuments", tags: ["Applications"], summary: "Клиент подписывает документы (модельная операция)",
-  request: { params: z.object({ id: z.coerce.number() }) },
-  responses: standardResponses("Документы подписаны в demo-режиме"),
+  request: idempotentRequest({ params: z.object({ id: z.coerce.number() }) }),
+  responses: idempotentResponses("Документы подписаны в demo-режиме", ClientApplicationSchema),
 }), (c) => {
   const u = requireUser(c); if (!u) return c.json(err("Не авторизован"), 401);
   const applicationId = c.req.valid("param").id;
@@ -757,8 +1015,8 @@ app.openapi(createRoute({
 
 app.openapi(createRoute({
   method: "post", path: "/api/applications/{id}/decline", operationId: "declineOffer", tags: ["Applications"], summary: "Клиент отказывается от предложения",
-  request: { params: z.object({ id: z.coerce.number() }) },
-  responses: standardResponses("Предложение отклонено"),
+  request: idempotentRequest({ params: z.object({ id: z.coerce.number() }) }),
+  responses: idempotentResponses("Предложение отклонено", ClientApplicationSchema),
 }), (c) => {
   const u = requireUser(c); if (!u) return c.json(err("Не авторизован"), 401);
   const applicationId = c.req.valid("param").id;
@@ -807,7 +1065,7 @@ app.openapi(createRoute({
     params: z.object({ id: z.coerce.number().int().positive(), requestId: z.coerce.number().int().positive() }),
     ...jsonBody(MoreInfoResponseSchema),
   },
-  responses: standardResponses("Ответ сохранён, повторная проверка запущена"),
+  responses: standardResponses("Ответ сохранён, повторная проверка запущена", ClientApplicationSchema),
 }), (c) => {
   const u = requireUser(c); if (!u) return c.json(err("Не авторизован"), 401);
   if (u.role !== "CLIENT") return c.json(err("Только клиент может отвечать на запрос"), 403);
@@ -839,7 +1097,7 @@ app.openapi(createRoute({
 app.openapi(createRoute({
   method: "post", path: "/api/applications/{id}/respond", operationId: "respondWithComment", tags: ["Applications"], summary: "Совместимый ответ на запрос типа COMMENT",
   request: { params: z.object({ id: z.coerce.number() }), ...jsonBody(z.object({ comment: z.string().min(3) })) },
-  responses: standardResponses("Ответ сохранён"),
+  responses: standardResponses("Ответ сохранён", ClientApplicationSchema),
 }), (c) => {
   const u = requireUser(c); if (!u) return c.json(err("Не авторизован"), 401);
   const a = getApplication(c.req.valid("param").id);
@@ -862,7 +1120,7 @@ app.openapi(createRoute({
       comment: z.string().max(2000).optional(),
     })),
   },
-  responses: standardResponses("Финансовые данные сохранены"),
+  responses: standardResponses("Финансовые данные сохранены", ClientApplicationSchema),
 }), (c) => {
   const u = requireUser(c); if (!u) return c.json(err("Не авторизован"), 401);
   if (u.role !== "CLIENT") return c.json(err("Только клиент может добавлять отчётность"), 403);
@@ -884,9 +1142,14 @@ app.openapi(createRoute({
 });
 
 // --- news (персональная лента под ОКВЭД клиента) ---
+const NewsItemSchema = z.object({
+  id: z.number().int(), title: z.string(), body: z.string(), tags: z.string(), published_at: z.string(),
+  personalized: z.boolean(), matched_tag: z.string().nullable(), rank: z.number().int(),
+}).openapi("NewsItem");
+
 app.openapi(createRoute({
   method: "get", path: "/api/news", operationId: "listNews", tags: ["News"], summary: "Новостная лента, персонализированная под профиль клиента",
-  responses: standardResponses("Новостная лента"),
+  responses: standardResponses("Новостная лента", z.array(NewsItemSchema)),
 }), (c) => {
   const u = currentUser(c);
   let okved = "";
@@ -905,15 +1168,15 @@ app.openapi(createRoute({
   return c.json(ok(scored));
 });
 
-// --- Детерминированный шаблонный помощник клиента ---
+// --- Автоматический справочник клиента: ответы только по фиксированным правилам ---
 app.openapi(createRoute({
   method: "post", path: "/api/assistant", operationId: "askTemplateAssistant", tags: ["Assistant"],
-  summary: "Вопрос к шаблонному помощнику клиента",
+  summary: "Вопрос к автоматическому справочнику клиента",
   request: jsonBody(z.object({
     application_id: z.number().int().positive().optional(),
     message: z.string().trim().min(2).max(1000),
   })),
-  responses: standardResponses("Шаблонный ответ помощника"),
+  responses: standardResponses("Автоматический ответ по фиксированным правилам", TemplateAssistantResponseSchema),
 }), (c) => {
   const u = requireUser(c); if (!u) return c.json(err("Не авторизован"), 401);
   if (u.role !== "CLIENT") return c.json(err("Только для клиентов"), 403);
@@ -940,23 +1203,29 @@ app.openapi(createRoute({
 
 function templateAnswer(message: string, context: string): string {
   const m = message.toLowerCase();
+  const notice = "Это автоматическая подсказка по заданным правилам, а не ответ ИИ или сотрудника банка.";
   if (m.includes("ставк") || m.includes("процент"))
-    return "Ставка зависит от продукта и скоринговой оценки: чем надёжнее финансовое положение и кредитная история, тем ниже ставка. Точные условия будут в предложении банка после рассмотрения заявки.";
+    return `${notice} Точная ставка появляется в предложении банка после проверки заявки. До этого значения в расчёте предварительные.`;
   if (m.includes("документ") || m.includes("справк"))
-    return "Обычно нужны: паспорт руководителя, финансовая отчётность за последний год и данные о цели кредита. Если чего-то не хватит, банк запросит уточнение прямо в кабинете — заявка не будет отклонена молча.";
+    return `${notice} Список документов зависит от заявки. Нужный пакет или отдельный запрос появится в кабинете; отправляйте только то, что указано в запросе банка.`;
   if (m.includes("сколько") && (m.includes("ждать") || m.includes("долго") || m.includes("время")))
-    return "Автоматическая предварительная проверка занимает минуты. Финальное решение подтверждает сотрудник банка; ориентировочный срок — до одного рабочего дня. Текущий статус всегда виден в карточке заявки.";
-  if (m.includes("отказ")) return "Отказ не является окончательным: он зависит от текущего профиля риска. Снижение долговой нагрузки, погашение просрочек и повторная подача через несколько месяцев улучшают шансы.";
-  if (m.includes("услови")) return "Банк может одобрить сумму или срок, отличающиеся от запрошенных, — это изменённые условия, которые можно принять или отклонить. Решение всегда объясняется.";
-  if (context) return "По вашей заявке: статус и следующие шаги отображаются в карточке заявки. Если нужно уточнить детали продукта или условия — сформулируйте вопрос конкретнее, либо дождитесь решения банка.";
-  return "Я помогу с вопросами о продуктах, документах и этапах рассмотрения заявки. Сформулируйте вопрос подробнее — например: «какие документы нужны» или «как формируется ставка».";
+    return `${notice} Точный срок заранее неизвестен. Следите за текущим статусом и запросами в карточке заявки.`;
+  if (m.includes("отказ"))
+    return `${notice} Причина отказа указывается в карточке как комментарий банка. Автоматическая подсказка не может пересмотреть решение или оценить вероятность одобрения новой заявки.`;
+  if (m.includes("услови") || m.includes("комисс"))
+    return `${notice} Перед принятием сравните сумму, срок, ставку, платёж, общую выплату, срок действия предложения и сведения о комиссиях. Принять или отклонить можно только показанное предложение.`;
+  if (m.includes("статус") && context)
+    return `${notice} ${context} Доступные действия и следующий шаг показаны рядом со статусом.`;
+  if (context)
+    return `${notice} ${context} Для точной информации используйте условия, документы и запросы, показанные в карточке заявки.`;
+  return `${notice} Можно спросить о документах, ставке, условиях, комиссиях, сроке рассмотрения или статусе заявки.`;
 }
 
 // --- bank backoffice ---
 app.openapi(createRoute({
   method: "get", path: "/api/bank/queue", operationId: "listBankQueue", tags: ["Bank"], summary: "Очередь заявок банка",
   request: { query: z.object({ status: z.string().optional() }) },
-  responses: standardResponses("Очередь заявок"),
+  responses: standardResponses("Очередь заявок", z.array(BankQueueApplicationSchema)),
 }), (c) => {
   const u = requireUser(c); if (!u) return c.json(err("Не авторизован"), 401);
   if (u.role !== "BANK") return c.json(err("Только для сотрудников банка"), 403);
@@ -975,7 +1244,7 @@ app.openapi(createRoute({
 app.openapi(createRoute({
   method: "get", path: "/api/bank/applications/{id}", operationId: "getBankDossier", tags: ["Bank"], summary: "Досье заявки для аналитика",
   request: { params: z.object({ id: z.coerce.number() }) },
-  responses: standardResponses("Досье заявки"),
+  responses: standardResponses("Досье заявки", BankDossierSchema),
 }), (c) => {
   const u = requireUser(c); if (!u) return c.json(err("Не авторизован"), 401);
   if (u.role !== "BANK") return c.json(err("Только для сотрудников банка"), 403);
@@ -1051,11 +1320,11 @@ const DecisionRequestSchema = z.discriminatedUnion("type", [
 app.openapi(createRoute({
   method: "post", path: "/api/bank/applications/{id}/decision", operationId: "makeBankDecision", tags: ["Bank"],
   summary: "Кредитное решение аналитика (одобрить / изменить условия / отказать / запросить информацию)",
-  request: {
+  request: idempotentRequest({
     params: z.object({ id: z.coerce.number() }),
     ...jsonBody(DecisionRequestSchema),
-  },
-  responses: standardResponses("Кредитное решение сохранено"),
+  }),
+  responses: idempotentResponses("Кредитное решение сохранено", BankApplicationSchema),
 }), (c) => {
   const u = requireUser(c); if (!u) return c.json(err("Не авторизован"), 401);
   if (u.role !== "BANK") return c.json(err("Только для сотрудников банка"), 403);
@@ -1068,7 +1337,7 @@ app.openapi(createRoute({
     execute: () => {
       const a = getApplication(applicationId);
       if (!a) throw new CommandValidationError("Заявка не найдена", 404);
-      if (!["DECISION", "MORE_INFO"].includes(a.status as string)) throw new CommandValidationError("Заявка не на этапе кредитного решения", 409);
+      if (a.status !== "DECISION") throw new CommandValidationError("Заявка не на этапе кредитного решения", 409);
       let selectedProduct: Row | undefined;
       if (d.type === "APPROVE" || d.type === "CONDITIONS") {
         selectedProduct = db.prepare("SELECT * FROM products WHERE id = ?").get(d.product_id ?? a.product_id) as Row | undefined;
@@ -1126,8 +1395,8 @@ app.openapi(createRoute({
 app.openapi(createRoute({
   method: "post", path: "/api/bank/applications/{id}/issue", operationId: "issueApplication", tags: ["Bank"],
   summary: "Идемпотентно подтвердить модельную выдачу после подписания клиентом",
-  request: { params: z.object({ id: z.coerce.number().int().positive() }) },
-  responses: standardResponses("Модельная выдача зафиксирована"),
+  request: idempotentRequest({ params: z.object({ id: z.coerce.number().int().positive() }) }),
+  responses: idempotentResponses("Модельная выдача зафиксирована", BankApplicationSchema),
 }), (c) => {
   const u = requireUser(c); if (!u) return c.json(err("Не авторизован"), 401);
   if (u.role !== "BANK") return c.json(err("Только сотрудник банка может подтвердить выдачу"), 403);
@@ -1157,7 +1426,7 @@ app.openapi(createRoute({
       z.object({ action: z.literal("REJECT"), reason: z.string().trim().min(3).max(1000) }),
     ])),
   },
-  responses: standardResponses("Статус отчётности обновлён"),
+  responses: standardResponses("Статус отчётности обновлён", FinancialReportSchema),
 }), (c) => {
   const u = requireUser(c); if (!u) return c.json(err("Не авторизован"), 401);
   if (u.role !== "BANK") return c.json(err("Только для сотрудников банка"), 403);
@@ -1181,29 +1450,38 @@ app.openapi(createRoute({
 app.openapi(createRoute({
   method: "post", path: "/api/bank/applications/{id}/more-info/retry", operationId: "retryExternalChecks", tags: ["Bank"],
   summary: "Повторить внешние проверки по системному запросу без действия клиента",
-  request: { params: z.object({ id: z.coerce.number().int().positive() }) },
-  responses: standardResponses("Повторная проверка запущена"),
+  request: idempotentRequest({ params: z.object({ id: z.coerce.number().int().positive() }) }),
+  responses: idempotentResponses("Повторная проверка запущена", BankApplicationSchema),
 }), (c) => {
   const u = requireUser(c); if (!u) return c.json(err("Не авторизован"), 401);
   if (u.role !== "BANK") return c.json(err("Только для сотрудников банка"), 403);
   const applicationId = c.req.valid("param").id;
-  const a = getApplication(applicationId);
-  if (!a) return c.json(err("Заявка не найдена"), 404);
-  const request = getActiveMoreInfoRequest(applicationId);
-  if (!request || request.type !== "SYSTEM_RETRY") return c.json(err("Нет системной проверки, ожидающей повтора"), 409);
-  try {
-    retrySystemMoreInfo(applicationId, u.id as number, u.name as string);
-    return c.json(ok(appWithProduct(getApplication(applicationId) as Row)));
-  } catch (error) {
-    return c.json(err(error instanceof Error ? error.message : "Не удалось повторить проверку"), 409);
-  }
+  return idempotentJson(c, {
+    userId: u.id,
+    operation: `bank:applications:${applicationId}:more-info:retry`,
+    request: {},
+    execute: () => {
+      const application = getApplication(applicationId);
+      if (!application) throw new CommandValidationError("Заявка не найдена", 404);
+      const request = getActiveMoreInfoRequest(applicationId);
+      if (application.status !== "MORE_INFO" || request?.type !== "SYSTEM_RETRY" || request.status !== "RECHECK") {
+        throw new CommandValidationError("Нет системной проверки, ожидающей повтора", 409);
+      }
+      try {
+        retrySystemMoreInfo(applicationId, u.id as number, u.name as string);
+        return appWithProduct(getApplication(applicationId) as Row);
+      } catch (error) {
+        throw new CommandValidationError(error instanceof Error ? error.message : "Не удалось повторить проверку", 409);
+      }
+    },
+  });
 });
 
 app.openapi(createRoute({
   method: "get", path: "/api/bank/applications/{id}/recommendation", operationId: "getRecommendation", tags: ["Bank"],
   summary: "Рекомендация конвейера по скорингу (proposeDecision)",
   request: { params: z.object({ id: z.coerce.number() }) },
-  responses: standardResponses("Сохранённая рекомендация"),
+  responses: standardResponses("Сохранённая рекомендация", RecommendationSchema),
 }), (c) => {
   const u = requireUser(c); if (!u) return c.json(err("Не авторизован"), 401);
   if (u.role !== "BANK") return c.json(err("Только для сотрудников банка"), 403);
@@ -1228,7 +1506,7 @@ app.openapi(createRoute({
   method: "get", path: "/api/bank/applications/{id}/summary", operationId: "getDossierSummary", tags: ["Bank", "Assistant"],
   summary: "Шаблонное саммари досье для аналитика",
   request: { params: z.object({ id: z.coerce.number() }) },
-  responses: standardResponses("Саммари досье"),
+  responses: standardResponses("Саммари досье", TemplateAssistantResponseSchema),
 }), (c) => {
   const u = requireUser(c); if (!u) return c.json(err("Не авторизован"), 401);
   if (u.role !== "BANK") return c.json(err("Только для сотрудников банка"), 403);
@@ -1256,7 +1534,7 @@ app.openapi(createRoute({
   method: "get", path: "/api/mocks/bki/{inn}", operationId: "getMockCreditHistory", tags: ["Mocks"],
   summary: "Мок бюро кредитных историй (смоделированная интеграция)",
   request: { params: z.object({ inn: z.string() }) },
-  responses: standardResponses("Синтетический отчёт БКИ"),
+  responses: standardResponses("Синтетический отчёт БКИ", MockCreditHistorySchema),
 }), (c) => {
   const u = requireUser(c); if (!u) return c.json(err("Не авторизован"), 401);
   if (u.role !== "BANK") return c.json(err("Только для сотрудников банка"), 403);
@@ -1275,7 +1553,7 @@ app.openapi(createRoute({
   method: "get", path: "/api/mocks/egrul/{inn}", operationId: "getMockBusinessRegistry", tags: ["Mocks"],
   summary: "Мок ЕГРЮЛ/ЕГРИП (смоделированная интеграция)",
   request: { params: z.object({ inn: z.string() }) },
-  responses: standardResponses("Синтетическая запись реестра"),
+  responses: standardResponses("Синтетическая запись реестра", MockBusinessRegistrySchema),
 }), (c) => {
   const u = requireUser(c); if (!u) return c.json(err("Не авторизован"), 401);
   if (u.role !== "BANK") return c.json(err("Только для сотрудников банка"), 403);
@@ -1294,8 +1572,8 @@ app.doc31("/openapi.json", {
   openapi: "3.1.0",
   info: {
     title: "Умный кредитный кабинет — API",
-    version: "1.0.1",
-    description: "Демонстрационный кредитный конвейер для МСБ. Использует синтетические данные, локальные моки внешних систем и шаблонные ответы ассистента.",
+    version: "1.0.2",
+    description: "Демонстрационный кредитный конвейер для МСБ. Использует синтетические данные, локальные моки внешних систем и автоматические ответы по фиксированным правилам — без ИИ и без участия сотрудника банка.",
   },
   security: [{ cookieAuth: [] }],
 });

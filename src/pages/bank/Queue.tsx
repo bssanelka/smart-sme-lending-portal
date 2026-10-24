@@ -13,11 +13,16 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 
 const ALL_STATUSES = "ALL";
 const STATUSES = [ALL_STATUSES, "DECISION", "MORE_INFO", "OFFER", "READY_FOR_ISSUANCE", "ISSUED", "REJECTED", "SUBMITTED", "SCORING"];
-const ACTION_STATUSES = new Set(["DECISION", "MORE_INFO", "READY_FOR_ISSUANCE"]);
+const ACTION_STATUSES = new Set(["DECISION", "READY_FOR_ISSUANCE"]);
 const HOUR_MS = 60 * 60 * 1000;
 
 type QueueApplication = Application & { company_name?: string; company_inn?: string; okved_name?: string; client_name?: string };
 type SortOrder = "newest" | "oldest";
+
+function requiresBankAction(application: QueueApplication) {
+  return ACTION_STATUSES.has(application.status)
+    || (application.status === "MORE_INFO" && application.active_more_info_request?.type === "SYSTEM_RETRY");
+}
 
 function applicationAge(createdAt: string) {
   const createdTime = new Date(createdAt).getTime();
@@ -72,12 +77,12 @@ export default function Queue() {
     counts[application.status] = (counts[application.status] || 0) + 1;
     return counts;
   }, {}), [rows]);
-  const actionCount = useMemo(() => rows.filter((application) => ACTION_STATUSES.has(application.status)).length, [rows]);
+  const actionCount = useMemo(() => rows.filter(requiresBankAction).length, [rows]);
   const visibleRows = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase("ru-RU");
     return rows
       .filter((application) => status === ALL_STATUSES || application.status === status)
-      .filter((application) => !actionOnly || ACTION_STATUSES.has(application.status))
+      .filter((application) => !actionOnly || requiresBankAction(application))
       .filter((application) => !normalizedQuery || [application.public_no, application.company_inn, application.company_name]
         .some((value) => String(value || "").toLocaleLowerCase("ru-RU").includes(normalizedQuery)))
       .sort((left, right) => {
@@ -89,7 +94,7 @@ export default function Queue() {
   const counters = [
     { status: ALL_STATUSES, label: "Всего", count: rows.length },
     { status: "DECISION", label: "На решении", count: statusCounts.DECISION || 0 },
-    { status: "MORE_INFO", label: "Нужны данные", count: statusCounts.MORE_INFO || 0 },
+    { status: "MORE_INFO", label: "Уточнения и проверки", count: statusCounts.MORE_INFO || 0 },
     { status: "READY_FOR_ISSUANCE", label: "К выдаче", count: statusCounts.READY_FOR_ISSUANCE || 0 },
   ];
   const hasActiveFilters = status !== ALL_STATUSES || actionOnly || query.trim().length > 0;
@@ -238,6 +243,11 @@ export default function Queue() {
                       <div className="flex flex-wrap items-center gap-2 lg:ml-auto lg:max-w-md lg:justify-end">
                         {a.grade ? <GradeBadge grade={a.grade} /> : <Badge variant="outline">скоринг…</Badge>}
                         <StatusBadge status={a.status} label={a.status_label} />
+                        {a.status === "MORE_INFO" && a.active_more_info_request && (
+                          <Badge variant="outline" className={a.active_more_info_request.type === "SYSTEM_RETRY" ? "border-blue-200 bg-blue-50 text-blue-900" : "border-orange-200 bg-orange-50 text-orange-900"}>
+                            {a.active_more_info_request.type === "SYSTEM_RETRY" ? "Действие банка: повторить проверку" : "Ожидается ответ клиента"}
+                          </Badge>
+                        )}
                         <Badge
                           variant="outline"
                           className={age.className}

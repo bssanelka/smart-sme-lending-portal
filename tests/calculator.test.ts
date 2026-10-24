@@ -57,6 +57,20 @@ describe("automatic product selection", () => {
     expect(selection.alternatives.length).toBeGreaterThan(0);
   });
 
+  it("records an explicit client choice when the catalog product matches the recommendation", () => {
+    const selection = selectProductForNeed(products, {
+      amount: 1_500_000,
+      termMonths: 12,
+      purposeCategory: "оборотные средства",
+      annualRevenue: 42_000_000,
+    });
+
+    const chosen = chooseProductForCalculation(selection, selection.recommended.product.id);
+
+    expect(chosen.source).toBe("CLIENT_SELECTED");
+    expect(chosen.selected.product.id).toBe(selection.recommended.product.id);
+  });
+
   it("creates a canonical selection when the client chooses an eligible alternative", () => {
     const selection = selectProductForNeed(products, {
       amount: 1_500_000,

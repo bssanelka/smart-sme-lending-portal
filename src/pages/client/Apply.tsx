@@ -8,7 +8,6 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { api, fmtMoney, type SavedCalculation } from "@/lib/api";
 import { clearMutationKey, getMutationKey, recoverMutationOutcome } from "@/lib/mutation-recovery";
-import ConfirmDialog from "@/components/ConfirmDialog";
 
 export default function Apply() {
   const nav = useNavigate();
@@ -21,7 +20,6 @@ export default function Apply() {
   const [purpose, setPurpose] = useState("");
   const [busy, setBusy] = useState(false);
   const [submitError, setSubmitError] = useState("");
-  const [confirmOpen, setConfirmOpen] = useState(false);
   const [outcomeUnresolved, setOutcomeUnresolved] = useState(false);
   const mutationScope = `application:create:${calculationId ?? "invalid"}`;
 
@@ -120,7 +118,6 @@ export default function Apply() {
       }, key);
       clearMutationKey(mutationScope);
       setOutcomeUnresolved(false);
-      setConfirmOpen(false);
       nav(`/applications/${result.id}`);
     } catch (reason) {
       const recovery = await recoverMutationOutcome(
@@ -128,7 +125,6 @@ export default function Apply() {
         () => api.savedCalculation(calculation.calculation_id),
         (saved) => Boolean(saved.application),
       );
-      setConfirmOpen(false);
       if (recovery.status === "applied") {
         clearMutationKey(mutationScope);
         setOutcomeUnresolved(false);
@@ -167,20 +163,24 @@ export default function Apply() {
           <CardHeader>
             <div className="flex flex-wrap items-center gap-2">
               <CardTitle>{calculation.product.name}</CardTitle>
-              <Badge className={calculation.selection_source === "CLIENT_ALTERNATIVE" ? "bg-blue-100 text-blue-800" : "bg-emerald-100 text-emerald-800"}>
+              <Badge className={calculation.selection_source === "SYSTEM_RECOMMENDED" ? "bg-emerald-100 text-emerald-800" : "bg-blue-100 text-blue-800"}>
                 <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
-                {calculation.selection_source === "CLIENT_ALTERNATIVE" ? "Выбрано вами из подходящих" : "Рекомендовано системой"}
+                {calculation.selection_source === "SYSTEM_RECOMMENDED"
+                  ? "Рекомендовано системой"
+                  : calculation.selection_source === "CLIENT_SELECTED"
+                    ? "Выбрано вами в каталоге"
+                    : "Выбрано вами из подходящих"}
               </Badge>
             </div>
             <CardDescription>{calculation.product.tagline}</CardDescription>
           </CardHeader>
           <CardContent>
-            <form onSubmit={(event) => { event.preventDefault(); setSubmitError(""); setConfirmOpen(true); }} className="space-y-5">
+            <form onSubmit={(event) => { event.preventDefault(); if (!busy && !outcomeUnresolved) void submit(); }} className="space-y-5">
               <div className="grid gap-3 sm:grid-cols-2">
-                <div className="rounded-xl border bg-neutral-50 p-4"><p className="text-xs text-muted-foreground">Продукт</p><p className="mt-1 font-semibold">{calculation.product.name}</p><LockKeyhole className="mt-2 h-4 w-4 text-muted-foreground" /></div>
-                <div className="rounded-xl border bg-neutral-50 p-4"><p className="text-xs text-muted-foreground">Сумма</p><p className="mt-1 font-semibold">{fmtMoney(calculation.amount)}</p><LockKeyhole className="mt-2 h-4 w-4 text-muted-foreground" /></div>
-                <div className="rounded-xl border bg-neutral-50 p-4"><p className="text-xs text-muted-foreground">Срок</p><p className="mt-1 font-semibold">{calculation.term_months} мес.</p><LockKeyhole className="mt-2 h-4 w-4 text-muted-foreground" /></div>
-                <div className="rounded-xl border bg-neutral-50 p-4"><p className="text-xs text-muted-foreground">Категория цели</p><p className="mt-1 font-semibold capitalize">{calculation.purpose_category}</p><LockKeyhole className="mt-2 h-4 w-4 text-muted-foreground" /></div>
+                <div className="relative rounded-xl border bg-neutral-50 p-4 pr-12"><LockKeyhole className="absolute right-4 top-4 h-5 w-5 text-muted-foreground" /><p className="text-sm font-medium text-muted-foreground">Продукт</p><p className="mt-1 text-lg font-bold leading-snug">{calculation.product.name}</p></div>
+                <div className="relative rounded-xl border bg-neutral-50 p-4 pr-12"><LockKeyhole className="absolute right-4 top-4 h-5 w-5 text-muted-foreground" /><p className="text-sm font-medium text-muted-foreground">Сумма</p><p className="mt-1 text-lg font-bold">{fmtMoney(calculation.amount)}</p></div>
+                <div className="relative rounded-xl border bg-neutral-50 p-4 pr-12"><LockKeyhole className="absolute right-4 top-4 h-5 w-5 text-muted-foreground" /><p className="text-sm font-medium text-muted-foreground">Срок</p><p className="mt-1 text-lg font-bold">{calculation.term_months} мес.</p></div>
+                <div className="relative rounded-xl border bg-neutral-50 p-4 pr-12"><LockKeyhole className="absolute right-4 top-4 h-5 w-5 text-muted-foreground" /><p className="text-sm font-medium text-muted-foreground">Категория цели</p><p className="mt-1 text-lg font-bold capitalize leading-snug">{calculation.purpose_category}</p></div>
               </div>
 
               {(calculation.amount !== calculation.requested_amount || calculation.term_months !== calculation.requested_term_months) && (
@@ -192,6 +192,11 @@ export default function Apply() {
                 <Input id="application-purpose" value={purpose} onChange={(event) => setPurpose(event.target.value)}
                   placeholder="Например: закупка оборудования для расширения производства" required minLength={5} />
                 <p className="text-xs text-muted-foreground">Реквизиты компании подставляются из профиля. Повторно вводить их не нужно.</p>
+              </div>
+
+              <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-950">
+                <p className="font-semibold">Что произойдёт после отправки</p>
+                <p className="mt-1">Заявка будет сохранена и передана в банковский конвейер. Продукт, сумма и срок останутся зафиксированными; чтобы изменить их, потребуется новый расчёт.</p>
               </div>
 
               {submitError && (
@@ -210,27 +215,6 @@ export default function Apply() {
           </CardContent>
         </Card>
       </main>
-
-      <ConfirmDialog
-        open={confirmOpen}
-        title="Отправить заявку в банк?"
-        description={(
-          <div className="space-y-3">
-            <p>После подтверждения заявка будет сохранена и передана в банковский конвейер. Параметры этого расчёта изменить внутри заявки будет нельзя.</p>
-            <dl className="space-y-1.5 rounded-lg bg-neutral-50 p-3 text-foreground">
-              <div><dt className="inline text-muted-foreground">Продукт: </dt><dd className="inline font-medium">{calculation.product.name}</dd></div>
-              <div><dt className="inline text-muted-foreground">Сумма: </dt><dd className="inline font-medium">{fmtMoney(calculation.amount)}</dd></div>
-              <div><dt className="inline text-muted-foreground">Срок: </dt><dd className="inline font-medium">{calculation.term_months} мес.</dd></div>
-              <div><dt className="inline text-muted-foreground">Цель: </dt><dd className="inline font-medium">{purpose}</dd></div>
-            </dl>
-          </div>
-        )}
-        confirmLabel="Отправить заявку"
-        busy={busy}
-        error={submitError}
-        onConfirm={() => void submit()}
-        onOpenChange={(open) => { if (!busy && !outcomeUnresolved) setConfirmOpen(open); }}
-      />
     </div>
   );
 }

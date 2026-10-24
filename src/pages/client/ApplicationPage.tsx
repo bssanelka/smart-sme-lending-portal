@@ -42,6 +42,13 @@ const MORE_INFO_TYPE_LABELS: Record<MoreInfoRequest["type"], string> = {
   COMPANY_DATA: "Сведения о компании",
   SYSTEM_RETRY: "Повтор внешней проверки",
 };
+const MORE_INFO_STATUS_LABELS: Record<MoreInfoRequest["status"], string> = {
+  WAITING_CLIENT: "Ожидает вашего ответа",
+  CLIENT_RESPONDED: "Ответ получен",
+  RECHECK: "Выполняется повторная проверка",
+  CLOSED: "Закрыт",
+  CANCELLED: "Отменён",
+};
 const COMPANY_FIELD_LABELS: Record<string, string> = {
   address: "Юридический адрес",
   head_name: "Руководитель",
@@ -119,6 +126,7 @@ export default function ApplicationPage() {
   const [documentPreview, setDocumentPreview] = useState<DocumentPreview | null>(null);
   const previewHeadingRef = useRef<HTMLHeadingElement>(null);
   const previewTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const focusDocumentsAfterAcceptRef = useRef(false);
   const [financials, setFinancials] = useState({
     year: String(new Date().getFullYear() - 1),
     revenue: "",
@@ -216,6 +224,16 @@ export default function ApplicationPage() {
   useEffect(() => {
     if (documentPreview) previewHeadingRef.current?.focus();
   }, [documentPreview]);
+
+  useEffect(() => {
+    if (app?.status !== "SIGNING" || !focusDocumentsAfterAcceptRef.current) return;
+    focusDocumentsAfterAcceptRef.current = false;
+    window.requestAnimationFrame(() => {
+      const heading = document.getElementById("signing-documents-title");
+      heading?.scrollIntoView({ behavior: "smooth", block: "start" });
+      heading?.focus({ preventScroll: true });
+    });
+  }, [app?.status]);
 
   const act = async (fn: () => Promise<unknown>, successMessage: string) => {
     setBusy(true);
@@ -444,7 +462,9 @@ export default function ApplicationPage() {
 
   const runConfirmedAction = async () => {
     if (confirmAction === "accept") {
-      await executeCriticalAction("accept", (key) => api.accept(app.id, key), "Предложение принято. Банк формирует документы.");
+      focusDocumentsAfterAcceptRef.current = true;
+      const applied = await executeCriticalAction("accept", (key) => api.accept(app.id, key), "Предложение принято. Документы сформированы и доступны ниже.");
+      if (!applied) focusDocumentsAfterAcceptRef.current = false;
       return;
     }
     if (confirmAction === "sign") {
@@ -509,7 +529,7 @@ export default function ApplicationPage() {
           </div>
         )}
 
-        {actionError && (
+        {actionError && (app.status !== "OFFER" || unresolvedAction) && (
           <div role="alert" className={`flex flex-col gap-3 rounded-xl border px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between ${unresolvedAction ? "border-amber-300 bg-amber-50 text-amber-950" : "border-red-300 bg-red-50 text-red-800"}`}>
             <div><p className="font-semibold">{unresolvedAction ? "Результат действия требует проверки" : "Действие не выполнено"}</p><p className="mt-1">{actionError}</p></div>
             {unresolvedAction
@@ -558,12 +578,15 @@ export default function ApplicationPage() {
               </Card>
             )}
 
-            <OfferCard app={app} busy={busy || Boolean(unresolvedAction)} onAction={(action) => { setActionError(""); setConfirmAction(action); }} />
+            <OfferCard app={app} busy={busy || Boolean(unresolvedAction)} actionError={unresolvedAction ? "" : actionError} onAction={(action) => { setActionError(""); setConfirmAction(action); }} />
+
+            {["SIGNING", "READY_FOR_ISSUANCE"].includes(app.status) && <ApprovedTermsSummary app={app} />}
 
             {app.status === "SIGNING" && (
               <Card className="border-green-300 bg-green-50/50">
-                <CardHeader className="pb-2"><CardTitle className="text-base text-green-800">Ознакомьтесь с документами перед demo-подписанием</CardTitle></CardHeader>
+                <CardHeader className="pb-2"><CardTitle id="signing-documents-title" tabIndex={-1} className="text-base text-green-800 outline-none focus-visible:ring-2 focus-visible:ring-green-700">Предложение принято — документы готовы</CardTitle></CardHeader>
                 <CardContent className="space-y-4">
+                  <p className="text-sm text-green-950">Банк сформировал пакет по утверждённым условиям. Ознакомьтесь с каждым документом перед demo-подписанием.</p>
                   <DocList docs={app.documents} {...documentListControls} />
                   <div className="rounded-lg border border-green-200 bg-white p-3" aria-labelledby="document-progress-label">
                     <div className="flex items-center justify-between gap-3 text-sm">
@@ -616,7 +639,7 @@ export default function ApplicationPage() {
                       <div className="rounded-xl border border-orange-200 bg-orange-50 p-4">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <Badge className="bg-orange-100 text-orange-900">{MORE_INFO_TYPE_LABELS[activeMoreInfoRequest.type]}</Badge>
-                          <span className="flex items-center gap-1 text-xs text-orange-900"><Clock3 className="h-3.5 w-3.5" /> Ответ до {fmtDate(activeMoreInfoRequest.dueAt)}</span>
+                          <span className="flex items-center gap-1 text-xs text-orange-900"><Clock3 className="h-3.5 w-3.5" /> {activeMoreInfoRequest.type === "SYSTEM_RETRY" ? "Повтор выполняет банк" : `Ответ до ${fmtDate(activeMoreInfoRequest.dueAt)}`}</span>
                         </div>
                         <p className="mt-3 text-sm font-medium">{activeMoreInfoRequest.reason}</p>
                         {activeMoreInfoRequest.requiredFields.length > 0 && <p className="mt-2 text-xs text-muted-foreground">Обязательные сведения: {activeMoreInfoRequest.requiredFields.map((field) => COMPANY_FIELD_LABELS[field] || field).join(", ")}.</p>}
@@ -683,7 +706,7 @@ export default function ApplicationPage() {
                   )}
 
                   {(app.more_info_requests?.length ?? 0) > 1 && (
-                    <details className="border-t pt-3"><summary className="cursor-pointer text-sm font-medium">История запросов</summary><div className="mt-3 space-y-2">{app.more_info_requests!.map((request) => <div key={request.id} className="rounded-lg border p-3 text-xs"><p className="font-medium">{MORE_INFO_TYPE_LABELS[request.type]} · {request.status}</p><p className="mt-1 text-muted-foreground">{request.reason}</p></div>)}</div></details>
+                    <details className="border-t pt-3"><summary className="cursor-pointer text-sm font-medium">История запросов</summary><div className="mt-3 space-y-2">{app.more_info_requests!.map((request) => <div key={request.id} className="rounded-lg border p-3 text-xs"><p className="font-medium">{MORE_INFO_TYPE_LABELS[request.type]} · {MORE_INFO_STATUS_LABELS[request.status]}</p><p className="mt-1 text-muted-foreground">{request.reason}</p></div>)}</div></details>
                   )}
                 </CardContent>
               </Card>
@@ -700,7 +723,9 @@ export default function ApplicationPage() {
               <Card className={app.status === "REJECTED" ? "border-red-200" : "border-neutral-300"}>
                 <CardHeader className="pb-2"><CardTitle className="text-base">{app.status === "REJECTED" ? "Решение банка и следующий шаг" : "Предложение отклонено"}</CardTitle></CardHeader>
                 <CardContent className="space-y-4">
-                  <p className="text-sm">{app.status === "REJECTED" ? app.decision?.reason || "Причина отказа не указана" : "Исходная заявка сохранена в истории. Можно вернуться к потребности и получить новый автоматический подбор."}</p>
+                  {app.status === "REJECTED" ? (
+                    <div className="rounded-lg border bg-neutral-50 p-3 text-sm"><p className="font-semibold">Комментарий банка</p><p className="mt-1 text-muted-foreground">{app.decision?.reason || "Комментарий не указан"}</p></div>
+                  ) : <p className="text-sm">Исходная заявка сохранена в истории. Можно вернуться к потребности и получить новый автоматический подбор.</p>}
                   <div className="rounded-lg bg-blue-50 p-3 text-sm text-blue-900">
                     Система заново проверит подходящие продукты и может предложить другую сумму или срок. Старая заявка останется без изменений.
                   </div>
@@ -776,13 +801,43 @@ function OfferConfirmationDetails({ app }: { app: Application }) {
         {items.map(([label, value]) => (
           <div key={label}>
             <dt className="text-xs text-muted-foreground">{label}</dt>
-            <dd className="font-semibold text-foreground">{value}</dd>
+            <dd className={`font-semibold text-foreground ${label === "Предложение действительно" ? "whitespace-nowrap" : ""}`}>{value}</dd>
           </div>
         ))}
       </dl>
       <p className="rounded-lg bg-amber-50 p-3 text-xs text-amber-950">{ECONOMICS_DISCLOSURE}</p>
       {snapshotError && <p role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">Ошибка данных предложения: {snapshotError}</p>}
     </div>
+  );
+}
+
+function ApprovedTermsSummary({ app }: { app: Application }) {
+  const terms = resolveCreditTerms(app.decision);
+  const items = [
+    ["Продукт", app.decision?.productName || app.product_name || "Не указан"],
+    ["Основной долг", fmtMoney(terms.amount)],
+    ["Ставка", valueOrFallback(terms.rate, "%")],
+    ["Срок", valueOrFallback(terms.termMonths, " мес.")],
+    ["Платёж в месяц", fmtMoney(terms.monthlyPayment)],
+    ["Переплата", fmtMoney(terms.overpayment)],
+    ["Общая выплата", fmtMoney(terms.totalPayment)],
+  ];
+
+  return (
+    <Card className="border-blue-200 bg-blue-50/40">
+      <CardHeader className="pb-2"><CardTitle className="text-base text-blue-950">Утверждённые условия</CardTitle></CardHeader>
+      <CardContent className="space-y-4">
+        <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {items.map(([label, value]) => <div key={label} className="rounded-lg border bg-white p-3"><dt className="text-xs text-muted-foreground">{label}</dt><dd className="mt-1 font-bold">{value}</dd></div>)}
+          <div className="rounded-lg border bg-white p-3"><dt className="text-xs text-muted-foreground">Тип платежа</dt><dd className="mt-1 font-bold">{paymentTypeLabel(app.decision?.paymentType)}</dd></div>
+          <div className="rounded-lg border bg-white p-3"><dt className="text-xs text-muted-foreground">Предложение действительно до</dt><dd className="mt-1 whitespace-nowrap font-bold">{validUntilLabel(app.decision?.validUntil)}</dd></div>
+          <div className="rounded-lg border bg-white p-3"><dt className="text-xs text-muted-foreground">Комиссии</dt><dd className="mt-1 font-bold">{app.decision?.feesIncluded === false ? "Не моделируются и не включены" : "Данные не указаны"}</dd></div>
+        </dl>
+        {app.decision?.reason && <div className="rounded-lg border bg-white p-3 text-sm"><p className="font-semibold">Комментарий банка</p><p className="mt-1 text-muted-foreground">{app.decision.reason}</p></div>}
+        <p className="rounded-lg bg-amber-50 p-3 text-xs text-amber-950">{ECONOMICS_DISCLOSURE}</p>
+        {creditTermsSnapshotError(app.decision) && <p role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">Ошибка данных утверждённых условий: {creditTermsSnapshotError(app.decision)}</p>}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -860,30 +915,38 @@ function signedDocumentsDate(documents: AppDocument[]): string | null {
   return documents.find((document) => document.status === "SIGNED" && document.signed_at)?.signed_at ?? null;
 }
 
+function documentStatusLabel(status: string) {
+  if (status === "SIGNED") return "Подписан";
+  if (status === "GENERATED") return "Сформирован";
+  return "Загружен";
+}
+
+function significantDocumentDate(document: AppDocument) {
+  if (document.signed_at) return { label: "Подписан", value: document.signed_at };
+  if (document.acknowledged_at) return { label: "Ознакомление подтверждено", value: document.acknowledged_at };
+  if (document.opened_at) return { label: "Открыт", value: document.opened_at };
+  return { label: "Сформирован", value: document.created_at };
+}
+
 function DocList({ docs, documentTransfers, documentErrors, onPreview, onDownload }: { docs: AppDocument[] } & DocumentListControls) {
   return (
     <div className="space-y-2">
       {docs.map((document) => {
         const transfer = documentTransfers[document.id];
         const errorId = `document-${document.id}-error`;
+        const significantDate = significantDocumentDate(document);
         return (
           <div key={document.id} className="rounded-lg border bg-white px-3 py-3 text-sm">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-              <span className="flex min-w-0 items-start gap-2">
+              <div className="flex min-w-0 items-start gap-2">
                 <FileCheck className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-                <span className="min-w-0">
-                  <b className="break-words">{document.kind}</b>
-                  <span className="block break-all text-xs font-normal text-muted-foreground">Версия {document.document_version || "не указана"} · SHA-256 {document.content_hash ? document.content_hash.slice(0, 12) : "нет"}…</span>
-                </span>
-              </span>
-              <div className="flex w-full flex-col gap-2 sm:w-auto sm:items-end">
-                <div className="flex flex-wrap items-center gap-2">
-                  {document.opened_at && <Badge variant="secondary" className="bg-blue-100 text-blue-900">Открыт на сервере</Badge>}
-                  {document.acknowledged_at && <Badge variant="secondary" className="bg-emerald-100 text-emerald-900">Ознакомление подтверждено</Badge>}
-                  <Badge variant={document.status === "SIGNED" ? "default" : "secondary"} className={document.status === "SIGNED" ? "bg-emerald-700" : ""}>
-                    {document.status === "SIGNED" ? "Подписан" : document.status === "GENERATED" ? "Сформирован" : "Загружен"}
-                  </Badge>
+                <div className="min-w-0">
+                  <p className="break-words font-semibold">{document.kind}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">{significantDate.label}: <span className="whitespace-nowrap font-medium text-foreground">{fmtDate(significantDate.value)}</span></p>
                 </div>
+              </div>
+              <div className="flex w-full flex-col gap-2 sm:w-auto sm:items-end">
+                <Badge variant={document.status === "SIGNED" ? "default" : "secondary"} className={document.status === "SIGNED" ? "bg-emerald-700" : ""}>{documentStatusLabel(document.status)}</Badge>
                 <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto">
                   <Button type="button" size="sm" variant="outline" className="w-full" disabled={Boolean(transfer)} aria-label={`Открыть текстовый предпросмотр документа «${document.kind}»`} aria-describedby={documentErrors[document.id] ? errorId : undefined} onClick={(event) => onPreview(document, event.currentTarget)}>
                     {transfer === "preview" ? <Loader2 className="animate-spin" /> : <FileCheck />} Просмотреть
@@ -894,6 +957,23 @@ function DocList({ docs, documentTransfers, documentErrors, onPreview, onDownloa
                 </div>
               </div>
             </div>
+            <details className="mt-3 border-t pt-3">
+              <summary className="cursor-pointer text-xs font-medium text-muted-foreground">Сведения о документе</summary>
+              <div className="mt-3 grid gap-3 rounded-lg bg-neutral-50 p-3 text-xs sm:grid-cols-2">
+                <div><p className="text-muted-foreground">Файл</p><p className="mt-1 break-all font-medium">{document.filename}</p></div>
+                <div><p className="text-muted-foreground">Версия</p><p className="mt-1 font-medium">{document.document_version || "Не указана"}</p></div>
+                <div className="sm:col-span-2"><p className="text-muted-foreground">SHA-256</p><p className="mt-1 break-all font-mono">{document.content_hash || "Не указан"}</p></div>
+                <div className="sm:col-span-2">
+                  <p className="font-medium">История</p>
+                  <ul className="mt-1 space-y-1 text-muted-foreground">
+                    <li>Сформирован: <span className="whitespace-nowrap text-foreground">{fmtDate(document.created_at)}</span></li>
+                    {document.opened_at && <li>Открыт: <span className="whitespace-nowrap text-foreground">{fmtDate(document.opened_at)}</span></li>}
+                    {document.acknowledged_at && <li>Ознакомление подтверждено: <span className="whitespace-nowrap text-foreground">{fmtDate(document.acknowledged_at)}</span></li>}
+                    {document.signed_at && <li>Подписан: <span className="whitespace-nowrap text-foreground">{fmtDate(document.signed_at)}</span></li>}
+                  </ul>
+                </div>
+              </div>
+            </details>
             {documentErrors[document.id] && <p id={errorId} role="alert" className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">{documentErrors[document.id]}</p>}
           </div>
         );

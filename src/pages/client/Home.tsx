@@ -45,9 +45,18 @@ function ErrorState({ message, onRetry }: { message: string; onRetry: () => void
   );
 }
 
+function activeApplicationsText(count: number) {
+  const lastTwoDigits = count % 100;
+  const lastDigit = count % 10;
+  if (lastTwoDigits >= 11 && lastTwoDigits <= 14) return `${count} активных заявок`;
+  if (lastDigit === 1) return `${count} активная заявка`;
+  if (lastDigit >= 2 && lastDigit <= 4) return `${count} активные заявки`;
+  return `${count} активных заявок`;
+}
+
 export default function Home() {
   const { user, logout } = useAuth();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const requestedTab = searchParams.get("tab");
   const initialTab = requestedTab && ["calculator", "products", "apps", "news"].includes(requestedTab) ? requestedTab : "calculator";
   const [activeTab, setActiveTab] = useState(initialTab);
@@ -112,6 +121,11 @@ export default function Home() {
   }, []);
 
   const activeApplications = appsStatus === "success" ? apps.filter((application) => !FINAL_STATUSES.has(application.status)).length : null;
+  const selectedProductId = Number(searchParams.get("product_id"));
+  const selectedProduct = Number.isInteger(selectedProductId) && selectedProductId > 0
+    ? products.find((product) => product.id === selectedProductId)
+    : undefined;
+  const lowestPublishedRate = products.length > 0 ? Math.min(...products.map((product) => product.rate_from)) : null;
   const showCalculator = () => {
     setActiveTab("calculator");
     window.requestAnimationFrame(() => {
@@ -119,6 +133,13 @@ export default function Home() {
       financing?.scrollIntoView({ behavior: "smooth", block: "start" });
       financing?.focus({ preventScroll: true });
     });
+  };
+  const selectProductForCalculation = (productId: number) => {
+    const nextSearchParams = new URLSearchParams(searchParams);
+    nextSearchParams.set("tab", "calculator");
+    nextSearchParams.set("product_id", String(productId));
+    setSearchParams(nextSearchParams);
+    showCalculator();
   };
 
   return (
@@ -166,10 +187,10 @@ export default function Home() {
                     <Link to="/profile">Мои данные и льготы</Link>
                   </Button>
                 </div>
-                <div className="mt-7 flex flex-wrap gap-x-5 gap-y-2 text-xs text-neutral-300">
-                  <span className="flex items-center gap-1.5"><CheckCircle2 className="h-4 w-4 text-emerald-400" /> Без выбора банковского продукта</span>
-                  <span className="flex items-center gap-1.5"><CheckCircle2 className="h-4 w-4 text-emerald-400" /> Понятные факторы оценки</span>
-                  <span className="flex items-center gap-1.5"><CheckCircle2 className="h-4 w-4 text-emerald-400" /> Решение принимает сотрудник</span>
+                <div className="mt-7 flex flex-wrap gap-x-5 gap-y-2 text-sm font-medium text-neutral-100">
+                  <span className="flex items-center gap-1.5"><CheckCircle2 className="h-4 w-4 text-emerald-300" /> Можно начать без выбора продукта</span>
+                  <span className="flex items-center gap-1.5"><CheckCircle2 className="h-4 w-4 text-emerald-300" /> Видно, что влияет на расчёт</span>
+                  <span className="flex items-center gap-1.5"><CheckCircle2 className="h-4 w-4 text-emerald-300" /> Решение принимает сотрудник банка</span>
                 </div>
               </div>
 
@@ -198,17 +219,17 @@ export default function Home() {
           <div className="relative z-10 mx-3 -mt-1 grid rounded-2xl border bg-white shadow-lg sm:mx-8 sm:-mt-5 sm:grid-cols-3">
             <div className="flex items-center gap-3 border-b p-4 sm:border-b-0 sm:border-r sm:p-5">
               <div className="rounded-xl bg-red-50 p-2.5 text-[#EF3124]"><TrendingUp className="h-5 w-5" /></div>
-              <div><p className="text-lg font-bold">До заявки</p><p className="text-xs text-muted-foreground">соответствие, ставка и платёж</p></div>
+              <div><p className="text-base font-bold">Понятный расчёт до заявки</p><p className="text-xs text-muted-foreground">ставка, платёж и факторы оценки</p></div>
             </div>
             <div className="flex items-center gap-3 border-b p-4 sm:border-b-0 sm:border-r sm:p-5">
               <div className="rounded-xl bg-blue-50 p-2.5 text-blue-700"><ShieldCheck className="h-5 w-5" /></div>
-              <div><p className="text-lg font-bold">Без автосогласия</p><p className="text-xs text-muted-foreground">финальное решение за банком</p></div>
+              <div><p className="text-base font-bold">Решение после проверки</p><p className="text-xs text-muted-foreground">расчёт не означает автоматического одобрения</p></div>
             </div>
             <div className="flex items-center gap-3 p-4 sm:p-5">
               <div className="rounded-xl bg-emerald-50 p-2.5 text-emerald-700"><Building2 className="h-5 w-5" /></div>
               <div>
-                <p className="text-lg font-bold">{appsStatus === "loading" ? "…" : appsStatus === "error" ? "—" : activeApplications || "Нет"}</p>
-                <p className="text-xs text-muted-foreground">{appsStatus === "loading" ? "загрузка активных заявок" : appsStatus === "error" ? "не удалось загрузить заявки" : activeApplications ? "активных заявок" : "активных заявок сейчас"}</p>
+                <p className="text-base font-bold">{appsStatus === "loading" ? "Загружаем заявки…" : appsStatus === "error" ? "Заявки не загрузились" : activeApplications === 0 ? "Нет активных заявок" : activeApplicationsText(activeApplications ?? 0)}</p>
+                <p className="text-xs text-muted-foreground">{appsStatus === "error" ? "попробуйте открыть раздел «Мои заявки»" : "текущий статус в личном кабинете"}</p>
               </div>
             </div>
           </div>
@@ -216,12 +237,10 @@ export default function Home() {
 
         <section id="financing" tabIndex={-1} className="scroll-mt-20 border-y bg-white outline-none focus-visible:ring-2 focus-visible:ring-[#EF3124]">
           <div className="mx-auto max-w-6xl px-4 py-8 sm:py-10">
-            <div className="mb-6 flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.15em] text-[#b42318]">Личный кабинет</p>
-                <h2 className="mt-2 text-2xl font-bold tracking-tight sm:text-3xl">Управляйте финансированием в одном месте</h2>
-              </div>
-              <p className="max-w-md text-sm text-muted-foreground">Начните с расчёта или вернитесь к заявке, которая уже находится на рассмотрении.</p>
+            <div className="mb-6 max-w-3xl">
+              <p className="text-xs font-semibold uppercase tracking-[0.15em] text-[#b42318]">Калькулятор</p>
+              <h2 className="mt-2 text-2xl font-bold tracking-tight sm:text-3xl">Управляйте финансированием в одном месте</h2>
+              <p className="mt-3 text-sm leading-6 text-muted-foreground">Начните с расчёта или вернитесь к заявке, которая уже находится на рассмотрении.</p>
             </div>
 
             <Tabs value={activeTab} onValueChange={setActiveTab}>
@@ -230,12 +249,12 @@ export default function Home() {
                   <TabsTrigger value="calculator">Калькулятор</TabsTrigger>
                   <TabsTrigger value="products">Продукты</TabsTrigger>
                   <TabsTrigger value="apps">Мои заявки {appsStatus === "success" && apps.length > 0 && `(${apps.length})`}</TabsTrigger>
-                  <TabsTrigger value="news">Лента для бизнеса</TabsTrigger>
+                  <TabsTrigger value="news">Новости бизнеса</TabsTrigger>
                 </TabsList>
               </div>
 
               <TabsContent value="calculator">
-                <CreditCalculator />
+                <CreditCalculator key={selectedProductId || "automatic"} selectedProduct={selectedProduct} />
               </TabsContent>
 
               <TabsContent value="products">
@@ -246,32 +265,43 @@ export default function Home() {
                 ) : products.length === 0 ? (
                   <div className="rounded-2xl border border-dashed p-8 text-center"><Landmark className="mx-auto h-8 w-8 text-muted-foreground" /><p className="mt-3 font-medium">Продуктов пока нет</p><p className="mt-1 text-sm text-muted-foreground">Доступные предложения появятся здесь.</p></div>
                 ) : (
-                  <div className="grid gap-4 md:grid-cols-2">
-                    {products.map((product) => (
-                      <Card key={product.id} className="transition-shadow hover:shadow-md">
-                      <CardHeader className="pb-2">
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <CardTitle className="text-lg">{product.name}</CardTitle>
-                            <CardDescription>{product.tagline}</CardDescription>
-                          </div>
-                          <Badge className="border-red-200 bg-red-50 text-[#EF3124]">от {product.rate_from}%</Badge>
-                        </div>
-                      </CardHeader>
-                      <CardContent className="space-y-3">
-                        <p className="text-sm text-muted-foreground">{product.description}</p>
-                        <div className="flex flex-wrap gap-1.5">
-                          {(JSON.parse(product.features) as string[]).map((feature) => (
-                            <Badge key={feature} variant="secondary" className="font-normal">{feature}</Badge>
-                          ))}
-                        </div>
-                        <div className="flex items-center justify-between gap-3 text-sm">
-                          <span className="text-muted-foreground">{fmtMoney(product.min_amount)} — {fmtMoney(product.max_amount)} · {product.term_min}–{product.term_max} мес.</span>
-                          <Button size="sm" onClick={showCalculator}>Рассчитать <ArrowRight className="ml-1 h-3.5 w-3.5" /></Button>
-                        </div>
-                      </CardContent>
-                      </Card>
-                    ))}
+                  <div className="space-y-3">
+                    <p className="text-xs text-muted-foreground">Сравниваются только опубликованные стартовые ставки каталога. Персональная ставка и полная экономика появляются после расчёта.</p>
+                    <div className="grid items-stretch gap-4 md:grid-cols-2">
+                      {products.map((product) => {
+                        const hasLowestPublishedRate = product.rate_from === lowestPublishedRate;
+                        return (
+                          <Card key={product.id} className="h-full transition-shadow hover:shadow-md">
+                            <CardHeader className="pb-2">
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div className="min-w-0 flex-1">
+                                  <CardTitle className="text-lg">{product.name}</CardTitle>
+                                  <CardDescription className="mt-1">{product.tagline}</CardDescription>
+                                </div>
+                                <Badge variant="outline" className={`shrink-0 px-2.5 py-1 font-semibold ${hasLowestPublishedRate ? "border-emerald-300 bg-emerald-50 text-emerald-900" : "border-red-300 bg-red-50 text-red-800"}`}>
+                                  {hasLowestPublishedRate ? "Минимальная в каталоге" : "Ставка"} · от {product.rate_from}%
+                                </Badge>
+                              </div>
+                            </CardHeader>
+                            <CardContent className="flex flex-1 flex-col gap-4">
+                              <p className="text-sm leading-6 text-muted-foreground">{product.description}</p>
+                              <div className="flex flex-wrap gap-1.5">
+                                {(JSON.parse(product.features) as string[]).map((feature) => (
+                                  <Badge key={feature} variant="secondary" className="whitespace-normal font-normal leading-5">{feature}</Badge>
+                                ))}
+                              </div>
+                              <dl className="grid grid-cols-2 gap-3 rounded-xl border bg-neutral-50 p-3 text-sm">
+                                <div><dt className="text-xs text-muted-foreground">Диапазон суммы</dt><dd className="mt-1 font-semibold">от {fmtMoney(product.min_amount)} до {fmtMoney(product.max_amount)}</dd></div>
+                                <div><dt className="text-xs text-muted-foreground">Диапазон срока</dt><dd className="mt-1 font-semibold">от {product.term_min} до {product.term_max} мес.</dd></div>
+                              </dl>
+                              <Button className="mt-auto w-full sm:w-fit" size="sm" onClick={() => selectProductForCalculation(product.id)}>
+                                Рассчитать <ArrowRight className="ml-1 h-3.5 w-3.5" />
+                              </Button>
+                            </CardContent>
+                          </Card>
+                        );
+                      })}
+                    </div>
                   </div>
                 )}
               </TabsContent>
@@ -346,30 +376,30 @@ export default function Home() {
 
         <section className="mx-auto max-w-6xl px-4 py-12 sm:py-16">
           <div className="max-w-2xl">
-            <p className="text-xs font-semibold uppercase tracking-[0.15em] text-[#b42318]">Не просто калькулятор</p>
-            <h2 className="mt-2 text-2xl font-bold tracking-tight sm:text-3xl">Понятный путь вместо заявки вслепую</h2>
-            <p className="mt-3 text-muted-foreground">Кабинет помогает сопоставить потребность бизнеса с требованиями финансирования ещё до ручной проверки банка.</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.15em] text-[#b42318]">Как это помогает</p>
+            <h2 className="mt-2 text-2xl font-bold tracking-tight sm:text-3xl">Сначала посчитайте, потом решайте</h2>
+            <p className="mt-3 text-muted-foreground">Сравните потребность бизнеса с доступными продуктами и подготовьтесь к проверке банка без лишних обещаний.</p>
           </div>
           <div className="mt-7 grid gap-4 md:grid-cols-3">
             <Card className="border-0 bg-white shadow-sm">
               <CardContent className="p-6">
                 <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-red-50 text-[#EF3124]"><Calculator className="h-5 w-5" /></div>
-                <h3 className="font-semibold">Реалистичный ориентир</h3>
-                <p className="mt-2 text-sm leading-6 text-muted-foreground">До заявки видны примерная ставка, платёж, переплата и кредитный потенциал.</p>
+                <h3 className="font-semibold">Понятные цифры</h3>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">Посмотрите примерную ставку, ежемесячный платёж и общую стоимость до заполнения заявки.</p>
               </CardContent>
             </Card>
             <Card className="border-0 bg-white shadow-sm">
               <CardContent className="p-6">
                 <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-amber-50 text-amber-700"><Lightbulb className="h-5 w-5" /></div>
-                <h3 className="font-semibold">Варианты улучшения</h3>
-                <p className="mt-2 text-sm leading-6 text-muted-foreground">Система объясняет ключевые факторы и предлагает проверить сумму, срок или рефинансирование.</p>
+                <h3 className="font-semibold">Причины без сложных терминов</h3>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">Узнайте, какие данные повлияли на расчёт и что стоит уточнить перед обращением в банк.</p>
               </CardContent>
             </Card>
             <Card className="border-0 bg-white shadow-sm">
               <CardContent className="p-6">
                 <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-blue-50 text-blue-700"><Landmark className="h-5 w-5" /></div>
-                <h3 className="font-semibold">Честное решение банка</h3>
-                <p className="mt-2 text-sm leading-6 text-muted-foreground">Автоматизация готовит предварительную оценку, а финальные условия утверждает сотрудник.</p>
+                <h3 className="font-semibold">Без обещания одобрения</h3>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">Калькулятор показывает ориентир. Доступность продукта и финальные условия банк проверит отдельно.</p>
               </CardContent>
             </Card>
           </div>

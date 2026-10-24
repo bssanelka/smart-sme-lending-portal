@@ -8,6 +8,7 @@ async function login(page: Page, loginName: string) {
   await expect(page).toHaveURL(loginName === "bank" ? /\/bank$/ : /\/dashboard$/);
 }
 
+
 async function logoutFromDashboard(page: Page) {
   await page.getByRole("button", { name: "Выйти" }).click();
   await expect(page).toHaveURL(/\/login$/);
@@ -51,6 +52,9 @@ async function confirmBankDecision(page: Page) {
 
 test("client can choose an eligible alternative and open its locked application", async ({ page }) => {
   await login(page, "client1");
+  await expect(page.getByRole("heading", { name: /Узнайте возможности бизнеса/ })).toBeVisible();
+  await expect(page.getByLabel("Точная сумма, ₽")).toBeVisible();
+
   await page.getByLabel("Точная сумма, ₽").fill("1500000");
   await page.getByLabel("Желаемый срок, месяцев").fill("12");
   await page.getByRole("button", { name: "Подобрать продукт и рассчитать" }).click();
@@ -71,8 +75,6 @@ test("canonical client-bank flow reaches issued and recovers a lost accept respo
 
   await page.getByLabel("Опишите потребность подробнее").fill("Закупка продуктов и упаковки для сезонного роста");
   await page.getByRole("button", { name: "Отправить заявку в банк" }).click();
-  await expect(page.getByRole("dialog")).toBeVisible();
-  await page.getByRole("dialog").getByRole("button", { name: "Отправить заявку" }).click();
   await expect(page).toHaveURL(/\/applications\/\d+$/);
 
   const applicationUrl = new URL(page.url()).pathname;
@@ -83,11 +85,16 @@ test("canonical client-bank flow reaches issued and recovers a lost accept respo
   await logoutFromDashboard(page);
 
   await login(page, "bank");
+  await expect(page.getByRole("heading", { name: "Очередь заявок" })).toBeVisible();
+  await expect(page.getByLabel("Фильтр очереди по статусу")).toBeVisible();
+
   const queueSearch = page.getByLabel("Поиск по публичному номеру, ИНН или компании");
   await queueSearch.fill(publicNumber);
-  await expect(page.getByRole("link", { name: new RegExp(publicNumber) })).toHaveCount(1);
-  await page.getByText(publicNumber, { exact: true }).click();
+  const dossierLink = page.getByRole("link", { name: new RegExp(publicNumber) });
+  await expect(dossierLink).toHaveCount(1);
+  await dossierLink.first().click();
   await expect(page).toHaveURL(new RegExp(`/bank/applications/${applicationId}$`));
+  await expect(page.getByRole("button", { name: "Принять решение" })).toBeVisible();
   await page.getByRole("button", { name: "Подставить в форму" }).click();
   await page.getByRole("button", { name: "Принять решение" }).click();
   await expect(page.getByRole("dialog")).toBeVisible();
@@ -112,7 +119,7 @@ test("canonical client-bank flow reaches issued and recovers a lost accept respo
   }, { times: 1 });
   await page.getByRole("button", { name: "Принять условия" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Да, принять" }).click();
-  await expect(page.getByText("Ознакомьтесь с документами перед demo-подписанием")).toBeVisible();
+  await expect(page.getByText("Предложение принято — документы готовы", { exact: true })).toBeVisible();
 
   const previews = page.getByRole("button", { name: /Открыть текстовый предпросмотр документа/ });
   await expect(previews).toHaveCount(3);
