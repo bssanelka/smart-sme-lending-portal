@@ -19,7 +19,7 @@ function StartupLoader() {
         </div>
         <div>
           <p className="font-semibold text-neutral-900">Умный кредитный кабинет</p>
-          <p className="mt-1 text-sm text-muted-foreground">Проверяем сессию…</p>
+          <p className="mt-1 text-sm text-muted-foreground">Команда «Сурки» · Проверяем сессию…</p>
         </div>
       </div>
     </div>

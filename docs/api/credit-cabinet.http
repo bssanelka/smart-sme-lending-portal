@@ -1,4 +1,5 @@
 # Credit Cabinet API collection
+# Team: Сурки
 # Compatible with JetBrains HTTP Client and VS Code REST Client.
 # Execute requests from top to bottom. Named-response variables pass the freshly created IDs,
 # so the flow never relies on seeded or hard-coded application/document IDs.

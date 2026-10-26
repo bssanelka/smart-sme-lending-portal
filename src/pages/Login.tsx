@@ -38,7 +38,7 @@ export default function Login() {
             <div className="w-9 h-9 rounded-lg bg-[#EF3124] flex items-center justify-center text-white font-black text-lg">A</div>
             <CardTitle className="text-xl"><h1>Умный кредитный кабинет</h1></CardTitle>
           </div>
-          <CardDescription>Прототип цифрового кредитного конвейера для малого и микробизнеса. Вход по синтетической тестовой учётной записи (пароль у всех: demo123).</CardDescription>
+          <CardDescription>Решение команды «Сурки» — прототип цифрового кредитного конвейера для малого и микробизнеса. Вход по синтетической тестовой учётной записи (пароль у всех: demo123).</CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={submit} className="space-y-3">

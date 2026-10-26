@@ -1,8 +1,9 @@
 {
   "name": "smart-credit-cabinet",
   "private": true,
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "End-to-end lending portal for entrepreneurs and bank analysts",
+  "author": "Команда «Сурки»",
   "engines": {
     "node": ">=20"
   },

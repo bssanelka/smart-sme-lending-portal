@@ -419,7 +419,7 @@ export default function Home() {
 
       <footer className="border-t bg-white">
         <div className="mx-auto flex max-w-6xl flex-col gap-3 px-4 py-6 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
-          <p>Демонстрационный прототип умного кредитного кабинета. Все данные синтетические.</p>
+          <p>Команда «Сурки». Демонстрационный прототип умного кредитного кабинета. Все данные синтетические.</p>
           <div className="flex gap-4"><Link to="/profile" className="hover:text-foreground">Профиль и льготы</Link><button type="button" onClick={showCalculator} className="hover:text-foreground">Калькулятор</button></div>
         </div>
       </footer>
