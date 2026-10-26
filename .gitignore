@@ -31,7 +31,10 @@ pnpm-debug.log*
 # Editors and operating systems
 .vscode/
 .idea/
-.zed/*
-!.zed/tasks.json
+.zed/
 .DS_Store
 Thumbs.db
+
+# Local submission artifacts
+/docs/SUBMISSION.pdf
+/smart-sme-lending-portal-*.zip
